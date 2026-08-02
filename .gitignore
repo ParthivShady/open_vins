@@ -8,3 +8,4 @@ doxgen_generated
 *.swo
 doc
 .vscode
+config/navcore_sim_t1/estimator_config.yaml.orig
