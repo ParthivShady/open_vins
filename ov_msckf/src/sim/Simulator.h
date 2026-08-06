@@ -117,6 +117,18 @@ public:
   /// Access function to get the true parameters (i.e. calibration and settings)
   VioManagerOptions get_true_parameters() { return params; }
 
+/**
+   * @brief NavCore: per-feature pixel-noise sigma for sim measurement injection.
+   *
+   * Decoupled from filter-assumed R. Currently returns the scalar params.sim_sigma_pix;
+   * T.3 extension point for ramp/step/sinusoidal/per-feature/asymmetric-camera schedules —
+   * add branching on feat_id / cam_id / timestamp here without touching the call site.
+   */
+  double get_feature_noise_sigma(size_t feat_id, size_t cam_id, double timestamp) const {
+    (void)feat_id; (void)cam_id; (void)timestamp;  // unused until T.3
+    return params.sim_sigma_pix;
+  }
+
 protected:
   /**
    * @brief Projects the passed map features into the desired camera frame.

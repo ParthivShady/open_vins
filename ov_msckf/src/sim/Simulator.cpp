@@ -437,8 +437,10 @@ bool Simulator::get_next_cam(double &time_cam, std::vector<int> &camids,
     // Loop through and add noise to each uv measurement
     std::normal_distribution<double> w(0, 1);
     for (size_t j = 0; j < uvs.size(); j++) {
-      uvs.at(j).second(0) += params.msckf_options.sigma_pix * w(gen_meas_cams.at(i));
-      uvs.at(j).second(1) += params.msckf_options.sigma_pix * w(gen_meas_cams.at(i));
+// NavCore: decoupled sim/filter R. get_feature_noise_sigma() is the T.3 extension point.
+      double sigma = get_feature_noise_sigma(uvs.at(j).first, i, timestamp);
+      uvs.at(j).second(0) += sigma * w(gen_meas_cams.at(i));
+      uvs.at(j).second(1) += sigma * w(gen_meas_cams.at(i));
     }
 
     // Push back for this camera
