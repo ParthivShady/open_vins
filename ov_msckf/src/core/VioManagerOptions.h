@@ -147,6 +147,12 @@ struct VioManagerOptions {
   /// Update options for zero velocity (chi2 multiplier)
   UpdaterOptions zupt_options;
 
+/// NavCore: sim-side per-feature pixel noise sigma. Sentinel -1 => match msckf_options.sigma_pix
+  /// (backward-compatible with pre-decoupling configs). Set explicitly to decouple sim ground-truth
+  /// noise from filter-assumed R. T.3 extension point for heterogeneous schedules lives in
+  /// Simulator::get_feature_noise_sigma().
+  double sim_sigma_pix = -1.0;
+
   /**
    * @brief This function will load print out all noise parameters loaded.
    * This allows for visual checking that everything was loaded properly from ROS/CMD parsers.
@@ -173,6 +179,9 @@ struct VioManagerOptions {
       slam_options.sigma_pix_sq = std::pow(slam_options.sigma_pix, 2);
       aruco_options.sigma_pix_sq = std::pow(aruco_options.sigma_pix, 2);
       parser->parse_config("zupt_chi2_multipler", zupt_options.chi2_multipler);
+// NavCore: sim/filter R decoupling. Optional param; if unset, sim matches filter R (legacy behavior).
+      parser->parse_config("sim_sigma_pix", sim_sigma_pix, false);
+      if (sim_sigma_pix < 0) sim_sigma_pix = msckf_options.sigma_pix;
     }
     PRINT_DEBUG("  Updater MSCKF Feats:\n");
     msckf_options.print();
