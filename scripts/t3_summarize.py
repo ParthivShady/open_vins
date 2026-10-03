@@ -86,7 +86,7 @@ def main(root, out):
            "starved_updates", "nogate_updates", "updates", "noise_confirmed", "timed_out", "elapsed_s", "ttd10_s"]
     n = 0
     with open(out, "w", newline="") as fo:
-        w = csv.writer(fo); w.writerow(hdr)
+        w = csv.writer(fo, lineterminator="\n"); w.writerow(hdr)
         for run in sorted(root.glob("*/sig*/seed*")):
             m = COND.match(run.parent.name)
             if not m:
