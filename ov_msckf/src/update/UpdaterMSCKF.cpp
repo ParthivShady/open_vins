@@ -34,6 +34,12 @@
 
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/math/distributions/chi_squared.hpp>
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <vector>
 
 using namespace ov_core;
 using namespace ov_type;
@@ -55,7 +61,67 @@ UpdaterMSCKF::UpdaterMSCKF(UpdaterOptions &options, ov_core::FeatureInitializerO
   }
 }
 
+namespace {
+// ---------------------------------------------------------------------------
+// NavCore T.3a: per-update chi-square gate instrumentation.
+// Inactive unless the NAVCORE_GATE_LOG environment variable names a CSV path.
+// When inactive, nothing below changes filter behaviour (bit-identical).
+// exit_code: 0 = no input, 1 = gate rejected all, 2 = empty after compression,
+//            3 = normal update, 4 = nothing reached the gate (clean/triangulation)
+// ---------------------------------------------------------------------------
+std::ofstream *navcore_gate_log() {
+  static std::ofstream *log = nullptr;
+  static bool init = false;
+  if (!init) {
+    init = true;
+    const char *path = std::getenv("NAVCORE_GATE_LOG");
+    if (path != nullptr && path[0] != '\0') {
+      log = new std::ofstream(path, std::ios::out | std::ios::trunc);
+      if (log->is_open()) {
+        *log << "timestamp,n_in,n_after_clean,n_after_tri,n_gate_passed,"
+                "ratio_median,ratio_p90,exit_code,pos_cov_trace\n" << std::flush;
+      } else {
+        delete log;
+        log = nullptr;
+      }
+    }
+  }
+  return log;
+}
+
+double navcore_quantile(std::vector<double> v, double q) {
+  if (v.empty())
+    return std::nan("");
+  size_t k = (size_t)std::floor(q * (double)(v.size() - 1));
+  std::nth_element(v.begin(), v.begin() + k, v.end());
+  return v[k];
+}
+
+struct NavcoreGateRow {
+  std::shared_ptr<ov_msckf::State> state;
+  std::ofstream *log = nullptr;
+  int n_in = 0, n_after_clean = -1, n_after_tri = -1, n_gate_passed = -1;
+  int exit_code = 0;
+  std::vector<double> ratios;
+  ~NavcoreGateRow() {
+    if (log == nullptr)
+      return;
+    std::vector<std::shared_ptr<ov_type::Type>> pos = {state->_imu->p()};
+    double tr = ov_msckf::StateHelper::get_marginal_covariance(state, pos).trace();
+    *log << std::setprecision(17) << state->_timestamp << "," << n_in << "," << n_after_clean << ","
+         << n_after_tri << "," << n_gate_passed << "," << navcore_quantile(ratios, 0.5) << ","
+         << navcore_quantile(ratios, 0.9) << "," << exit_code << "," << tr << "\n" << std::flush;
+  }
+};
+} // namespace
+
 void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_ptr<Feature>> &feature_vec) {
+
+  // NavCore T.3a instrumentation (writes one CSV row on every exit; inactive by default)
+  NavcoreGateRow navcore_row;
+  navcore_row.state = state;
+  navcore_row.log = navcore_gate_log();
+  navcore_row.n_in = (int)feature_vec.size();
 
   // Return if no features
   if (feature_vec.empty())
@@ -93,6 +159,8 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     }
   }
   rT1 = boost::posix_time::microsec_clock::local_time();
+
+  navcore_row.n_after_clean = (int)feature_vec.size(); // NavCore T.3a
 
   // 2. Create vector of cloned *CAMERA* poses at each of our clone timesteps
   std::unordered_map<size_t, std::unordered_map<double, FeatureInitializer::ClonePose>> clones_cam;
@@ -165,6 +233,8 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
   size_t ct_jacob = 0;
   size_t ct_meas = 0;
 
+  navcore_row.n_after_tri = (int)feature_vec.size(); // NavCore T.3a
+
   // 4. Compute linear system for each feature, nullspace project, and reject
   auto it2 = feature_vec.begin();
   while (it2 != feature_vec.end()) {
@@ -221,6 +291,9 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
       PRINT_WARNING(YELLOW "chi2_check over the residual limit - %d\n" RESET, (int)res.rows());
     }
 
+    if (navcore_row.log != nullptr) // NavCore T.3a
+      navcore_row.ratios.push_back(chi2 / (_options.chi2_multipler * chi2_check));
+
     // Check if we should delete or not
     if (chi2 > _options.chi2_multipler * chi2_check) {
       (*it2)->to_delete = true;
@@ -255,6 +328,8 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     it2++;
   }
   rT3 = boost::posix_time::microsec_clock::local_time();
+  navcore_row.n_gate_passed = (int)feature_vec.size();             // NavCore T.3a
+  navcore_row.exit_code = (navcore_row.n_after_tri > 0) ? 1 : 4;   // NavCore T.3a
 
   // We have appended all features to our Hx_big, res_big
   // Delete it so we do not reuse information
@@ -271,12 +346,16 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
   res_big.conservativeResize(ct_meas, 1);
   Hx_big.conservativeResize(ct_meas, ct_jacob);
 
+  navcore_row.exit_code = 2; // NavCore T.3a
+
   // 5. Perform measurement compression
   UpdaterHelper::measurement_compress_inplace(Hx_big, res_big);
   if (Hx_big.rows() < 1) {
     return;
   }
   rT4 = boost::posix_time::microsec_clock::local_time();
+
+  navcore_row.exit_code = 3; // NavCore T.3a
 
   // Our noise is isotropic, so make it here after our compression
   Eigen::MatrixXd R_big = _options.sigma_pix_sq * Eigen::MatrixXd::Identity(res_big.rows(), res_big.rows());
