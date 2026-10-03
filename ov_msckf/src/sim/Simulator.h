@@ -120,13 +120,30 @@ public:
 /**
    * @brief NavCore: per-feature pixel-noise sigma for sim measurement injection.
    *
-   * Decoupled from filter-assumed R. Currently returns the scalar params.sim_sigma_pix;
+   * Decoupled from filter-assumed R. T.3b: returns params.sim_sigma_bad for features in the
+   * deterministic "bad" partition (see navcore_bad_bin), params.sim_sigma_pix otherwise.
    * T.3 extension point for ramp/step/sinusoidal/per-feature/asymmetric-camera schedules —
    * add branching on feat_id / cam_id / timestamp here without touching the call site.
    */
   double get_feature_noise_sigma(size_t feat_id, size_t cam_id, double timestamp) const {
-    (void)feat_id; (void)cam_id; (void)timestamp;  // unused until T.3
+    (void)cam_id; (void)timestamp;  // reserved for camera/time schedules
+    if (params.sim_bad_fraction > 0.0 && navcore_bad_bin(feat_id))
+      return params.sim_sigma_bad;
     return params.sim_sigma_pix;
+  }
+
+  /**
+   * @brief NavCore T.3b: deterministic per-seed feature partition (SplitMix64 finaliser).
+   * Pure function of (feat_id, sim_seed_measurements): consumes no RNG state, so the measurement
+   * noise stream is unchanged. Same feature => same answer in both cameras and for its whole track.
+   */
+  bool navcore_bad_bin(size_t feat_id) const {
+    uint64_t z = ((uint64_t)feat_id * 0x9E3779B97F4A7C15ULL) ^ ((uint64_t)params.sim_seed_measurements + 0x632BE59BD9B4E019ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    z = z ^ (z >> 31);
+    double u = (double)(z >> 11) * (1.0 / 9007199254740992.0); // uniform in [0,1)
+    return u < params.sim_bad_fraction;
   }
 
 protected:

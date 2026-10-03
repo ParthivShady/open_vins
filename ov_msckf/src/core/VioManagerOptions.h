@@ -153,6 +153,12 @@ struct VioManagerOptions {
   /// Simulator::get_feature_noise_sigma().
   double sim_sigma_pix = -1.0;
 
+  /// NavCore T.3b: heterogeneous per-feature sim noise. A deterministic fraction sim_bad_fraction of
+  /// features (chosen by hashing feat_id with sim_seed_measurements) get sim_sigma_bad; the rest get
+  /// sim_sigma_pix. Defaults (0.0, -1 => sim_sigma_pix) reproduce homogeneous behaviour exactly.
+  double sim_bad_fraction = 0.0;
+  double sim_sigma_bad = -1.0;
+
   /**
    * @brief This function will load print out all noise parameters loaded.
    * This allows for visual checking that everything was loaded properly from ROS/CMD parsers.
@@ -182,6 +188,14 @@ struct VioManagerOptions {
 // NavCore: sim/filter R decoupling. Optional param; if unset, sim matches filter R (legacy behavior).
       parser->parse_config("sim_sigma_pix", sim_sigma_pix, false);
       if (sim_sigma_pix < 0) sim_sigma_pix = msckf_options.sigma_pix;
+      // NavCore T.3b: heterogeneous sim noise (optional; defaults reproduce homogeneous sim)
+      parser->parse_config("sim_bad_fraction", sim_bad_fraction, false);
+      parser->parse_config("sim_sigma_bad", sim_sigma_bad, false);
+      if (sim_sigma_bad < 0) sim_sigma_bad = sim_sigma_pix;
+      if (sim_bad_fraction < 0.0) sim_bad_fraction = 0.0;
+      if (sim_bad_fraction > 1.0) sim_bad_fraction = 1.0;
+      PRINT_INFO("[NavCore] sim noise: sim_sigma_pix=%.3f sim_bad_fraction=%.3f sim_sigma_bad=%.3f\n",
+                 sim_sigma_pix, sim_bad_fraction, sim_sigma_bad);
     }
     PRINT_DEBUG("  Updater MSCKF Feats:\n");
     msckf_options.print();
