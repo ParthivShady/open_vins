@@ -28,7 +28,7 @@ mkdir -p "$OUT"
 source ~/navcore_ws/install/setup.bash
 START=$(date +%s)
 # '|| true': run_simulation segfaults on ROS2 shutdown (known, harmless); don't abort batches on it.
-NAVCORE_GATE_LOG=$OUT/gate.csv ros2 run ov_msckf run_simulation "$CONFIG" --ros-args \
+NAVCORE_GATE_LOG=$OUT/gate.csv timeout -s INT -k 30 900 ros2 run ov_msckf run_simulation "$CONFIG" --ros-args \
   -p sim_traj_path:=$TRAJ_PATH \
   -p sim_seed_measurements:=$SEED \
   -p sim_sigma_pix:=$SIG \
