@@ -9,6 +9,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <string>
 
 namespace ov_msckf {
 
@@ -51,6 +55,54 @@ private:
   }
   bool warned = false;
 };
+
+
+/// NavCore T.4: per-feature gate log (diagnostics only; never changes the filter).
+/// Active only when NAVCORE_GATE_LOG is set; writes <that path without .csv><suffix>.
+/// kind: 0 = MSCKF, 1 = SLAM update, 2 = SLAM initialisation (gate inside StateHelper; chi2 n/a).
+class NavcoreFeatLog {
+public:
+  explicit NavcoreFeatLog(const char *suffix) {
+    const char *p = std::getenv("NAVCORE_GATE_LOG");
+    if (p == nullptr || p[0] == '\0')
+      return;
+    std::string path(p);
+    if (path.size() > 4 && path.compare(path.size() - 4, 4, ".csv") == 0)
+      path.resize(path.size() - 4);
+    path += suffix;
+    log = new std::ofstream(path, std::ios::out | std::ios::trunc);
+    if (log->is_open()) {
+      *log << "timestamp,kind,featid,sigma_true,sigma_used,dof,chi2,threshold,accepted\n" << std::flush;
+    } else {
+      delete log;
+      log = nullptr;
+    }
+  }
+  bool active() const { return log != nullptr; }
+  void row(double t, int kind, size_t featid, double nominal_sq, int dof, double chi2, double threshold, bool accepted) {
+    if (log == nullptr)
+      return;
+    NavcoreNoise &nn = NavcoreNoise::get();
+    const double s_true = nn.oracle_sigma ? nn.oracle_sigma(featid) : std::nan("");
+    const double s_used = std::sqrt(nn.sigma_sq(featid, nominal_sq));
+    *log << std::setprecision(17) << t << "," << kind << "," << featid << "," << std::setprecision(6) << s_true << "," << s_used << ","
+         << dof << "," << chi2 << "," << threshold << "," << (accepted ? 1 : 0) << "\n"
+         << std::flush;
+  }
+
+private:
+  std::ofstream *log = nullptr;
+};
+
+inline NavcoreFeatLog &navcore_msckf_feat_log() {
+  static NavcoreFeatLog l("_feat.csv");
+  return l;
+}
+
+inline NavcoreFeatLog &navcore_slam_feat_log() {
+  static NavcoreFeatLog l("_slam.csv");
+  return l;
+}
 
 } // namespace ov_msckf
 

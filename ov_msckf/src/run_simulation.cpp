@@ -97,8 +97,19 @@ int main(int argc, char **argv) {
   params.use_multi_threading_subs = false;
   sim = std::make_shared<Simulator>(params);
   sys = std::make_shared<VioManager>(params);
-  // NavCore T.4: connect the simulation oracle (used only when NAVCORE_R_MODE=1)
-  ov_msckf::NavcoreNoise::get().oracle_sigma = [](size_t featid) { return sim->get_feature_noise_sigma(featid, 0, 0.0); };
+  // NavCore T.4: connect the simulation oracle (used only when NAVCORE_R_MODE=1).
+  // TrackSIM stores each simulated feature as (simulator id + currid), with currid = 4*max_aruco_features + 1
+  // (TrackBase), so the filter's feature id must be shifted back before asking the simulator for its sigma.
+  {
+    const size_t navcore_id_offset = 4 * (size_t)params.state_options.max_aruco_features + 1;
+    ov_msckf::NavcoreNoise::get().oracle_sigma = [navcore_id_offset](size_t featid) {
+      if (featid < navcore_id_offset) {
+        std::fprintf(stderr, "[NavCore] oracle: feature id %zu below sim offset %zu\n", featid, navcore_id_offset);
+        std::exit(EXIT_FAILURE);
+      }
+      return sim->get_feature_noise_sigma(featid - navcore_id_offset, 0, 0.0);
+    };
+  }
 #if ROS_AVAILABLE == 1
   viz = std::make_shared<ROS1Visualizer>(nh, sys, sim);
 #elif ROS_AVAILABLE == 2

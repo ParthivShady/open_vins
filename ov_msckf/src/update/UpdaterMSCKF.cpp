@@ -306,6 +306,8 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
 
     if (navcore_row.log != nullptr) // NavCore T.3a
       navcore_row.ratios.push_back(chi2 / (_options.chi2_multipler * chi2_check));
+    navcore_msckf_feat_log().row(state->_timestamp, 0, (*it2)->featid, _options.sigma_pix_sq, (int)res.rows(), chi2,
+                                 _options.chi2_multipler * chi2_check, chi2 <= _options.chi2_multipler * chi2_check); // NavCore T.4
 
     // Check if we should delete or not
     if (chi2 > _options.chi2_multipler * chi2_check) {

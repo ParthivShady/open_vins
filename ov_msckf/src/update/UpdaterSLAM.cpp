@@ -40,6 +40,8 @@ using namespace ov_core;
 using namespace ov_type;
 #include "NavcoreNoise.h"
 
+#include <boost/math/distributions/chi_squared.hpp>
+
 using namespace ov_msckf;
 
 UpdaterSLAM::UpdaterSLAM(UpdaterOptions &options_slam, UpdaterOptions &options_aruco, ov_core::FeatureInitializerOptions &feat_init_options)
@@ -233,7 +235,9 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     // Try to initialize, delete new pointer if we failed
     double chi2_multipler =
         ((int)feat.featid < state->_options.max_aruco_features) ? _options_aruco.chi2_multipler : _options_slam.chi2_multipler;
-    if (StateHelper::initialize(state, landmark, Hx_order, H_x, H_f, R, res, chi2_multipler)) {
+    const bool navcore_init_ok = StateHelper::initialize(state, landmark, Hx_order, H_x, H_f, R, res, chi2_multipler);
+    navcore_slam_feat_log().row(state->_timestamp, 2, feat.featid, sigma_pix_sq, -1, std::nan(""), std::nan(""), navcore_init_ok); // NavCore T.4
+    if (navcore_init_ok) {
       state->_features_SLAM.insert({(*it2)->featid, landmark});
       (*it2)->to_delete = true;
       it2++;
@@ -397,6 +401,13 @@ void UpdaterSLAM::update(std::shared_ptr<State> state, std::vector<std::shared_p
     sigma_pix_sq = NavcoreNoise::get().sigma_sq(feat.featid, sigma_pix_sq); // NavCore T.4: no-op unless NAVCORE_R_MODE=1
     S.diagonal() += sigma_pix_sq * Eigen::VectorXd::Ones(S.rows());
     double chi2 = res.dot(S.llt().solve(res));
+    if (navcore_slam_feat_log().active()) { // NavCore T.4: diagnostics only
+      const double navcore_mult =
+          ((int)feat.featid < state->_options.max_aruco_features) ? _options_aruco.chi2_multipler : _options_slam.chi2_multipler;
+      boost::math::chi_squared navcore_dist((double)res.rows());
+      const double navcore_thr = navcore_mult * boost::math::quantile(navcore_dist, 0.95);
+      navcore_slam_feat_log().row(state->_timestamp, 1, feat.featid, sigma_pix_sq, (int)res.rows(), chi2, navcore_thr, chi2 <= navcore_thr);
+    }
 
     // Get our threshold (we precompute up to 500 but handle the case that it is more)
     double chi2_check;
