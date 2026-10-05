@@ -39,6 +39,7 @@
 
 using namespace ov_msckf;
 
+#include "update/NavcoreNoise.h"
 std::shared_ptr<Simulator> sim;
 std::shared_ptr<VioManager> sys;
 #if ROS_AVAILABLE == 1
@@ -96,6 +97,8 @@ int main(int argc, char **argv) {
   params.use_multi_threading_subs = false;
   sim = std::make_shared<Simulator>(params);
   sys = std::make_shared<VioManager>(params);
+  // NavCore T.4: connect the simulation oracle (used only when NAVCORE_R_MODE=1)
+  ov_msckf::NavcoreNoise::get().oracle_sigma = [](size_t featid) { return sim->get_feature_noise_sigma(featid, 0, 0.0); };
 #if ROS_AVAILABLE == 1
   viz = std::make_shared<ROS1Visualizer>(nh, sys, sim);
 #elif ROS_AVAILABLE == 2

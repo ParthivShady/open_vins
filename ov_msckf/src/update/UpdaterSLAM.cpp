@@ -38,6 +38,8 @@
 
 using namespace ov_core;
 using namespace ov_type;
+#include "NavcoreNoise.h"
+
 using namespace ov_msckf;
 
 UpdaterSLAM::UpdaterSLAM(UpdaterOptions &options_slam, UpdaterOptions &options_aruco, ov_core::FeatureInitializerOptions &feat_init_options)
@@ -225,6 +227,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     // Measurement noise matrix
     double sigma_pix_sq =
         ((int)feat.featid < state->_options.max_aruco_features) ? _options_aruco.sigma_pix_sq : _options_slam.sigma_pix_sq;
+    sigma_pix_sq = NavcoreNoise::get().sigma_sq(feat.featid, sigma_pix_sq); // NavCore T.4: no-op unless NAVCORE_R_MODE=1
     Eigen::MatrixXd R = sigma_pix_sq * Eigen::MatrixXd::Identity(res.rows(), res.rows());
 
     // Try to initialize, delete new pointer if we failed
@@ -391,6 +394,7 @@ void UpdaterSLAM::update(std::shared_ptr<State> state, std::vector<std::shared_p
     Eigen::MatrixXd S = H_xf * P_marg * H_xf.transpose();
     double sigma_pix_sq =
         ((int)feat.featid < state->_options.max_aruco_features) ? _options_aruco.sigma_pix_sq : _options_slam.sigma_pix_sq;
+    sigma_pix_sq = NavcoreNoise::get().sigma_sq(feat.featid, sigma_pix_sq); // NavCore T.4: no-op unless NAVCORE_R_MODE=1
     S.diagonal() += sigma_pix_sq * Eigen::VectorXd::Ones(S.rows());
     double chi2 = res.dot(S.llt().solve(res));
 

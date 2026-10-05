@@ -43,6 +43,8 @@
 
 using namespace ov_core;
 using namespace ov_type;
+#include "NavcoreNoise.h"
+
 using namespace ov_msckf;
 
 UpdaterMSCKF::UpdaterMSCKF(UpdaterOptions &options, ov_core::FeatureInitializerOptions &feat_init_options) : _options(options) {
@@ -274,6 +276,17 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
 
     // Nullspace project
     UpdaterHelper::nullspace_project_inplace(H_f, H_x, res);
+
+    // NavCore T.4: per-feature noise by whitening after the null-space projection
+    // (method doc, Prop. 7). Gate and R_big keep sigma_pix_sq. No-op unless NAVCORE_R_MODE=1.
+    {
+      const double navcore_s2 = NavcoreNoise::get().sigma_sq((*it2)->featid, _options.sigma_pix_sq);
+      if (navcore_s2 != _options.sigma_pix_sq) {
+        const double rho = std::sqrt(_options.sigma_pix_sq / navcore_s2);
+        H_x *= rho;
+        res *= rho;
+      }
+    }
 
     /// Chi2 distance check
     Eigen::MatrixXd P_marg = StateHelper::get_marginal_covariance(state, Hx_order);
