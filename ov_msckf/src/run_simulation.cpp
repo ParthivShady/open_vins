@@ -180,6 +180,19 @@ int main(int argc, char **argv) {
     bool hascam = sim->get_next_cam(time_cam, camids, feats);
     if (hascam) {
       if (buffer_timecam != -1) {
+        // NavCore T.4b: per-frame pooled noise = mean true sigma^2 over this frame's features (mode 2 only).
+        // buffer_feats holds simulator ids (TrackSIM adds its offset later), so no id shift is needed here.
+        if (ov_msckf::NavcoreNoise::get().mode == 2) {
+          double navcore_s2 = 0.0;
+          size_t navcore_n = 0;
+          for (const auto &navcore_cam : buffer_feats)
+            for (const auto &navcore_f : navcore_cam) {
+              const double s = sim->get_feature_noise_sigma(navcore_f.first, 0, 0.0);
+              navcore_s2 += s * s;
+              navcore_n++;
+            }
+          ov_msckf::NavcoreNoise::get().pool_sigma_sq = (navcore_n > 0) ? navcore_s2 / navcore_n : -1.0;
+        }
         sys->feed_measurement_simulation(buffer_timecam, buffer_camids, buffer_feats);
 #if ROS_AVAILABLE == 1 || ROS_AVAILABLE == 2
         viz->visualize();

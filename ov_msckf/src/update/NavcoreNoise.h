@@ -28,6 +28,8 @@ public:
 
   /// Pixel variance to use for this feature; nominal_sq unless mode 1 with an oracle connected
   double sigma_sq(size_t featid, double nominal_sq) {
+    if (mode == 2) // T.4b: one pooled value for every feature in the frame (set by the simulator loop)
+      return (pool_sigma_sq > 0.0) ? scale * scale * pool_sigma_sq : nominal_sq;
     if (mode != 1)
       return nominal_sq;
     if (!oracle_sigma) {
@@ -42,6 +44,7 @@ public:
   }
 
   int mode = 0;
+  double pool_sigma_sq = -1.0; ///< T.4b: mean true sigma^2 over the current frame (mode 2)
   double scale = 1.0;
 
 private:
