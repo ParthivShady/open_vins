@@ -62,9 +62,11 @@ def gate_overall(dirs):
             for line in fh:
                 r = line.split(',')
                 try:
-                    tri += float(r[3]); passed += float(r[4])
+                    a, b = float(r[3]), float(r[4])
                 except (ValueError, IndexError):
-                    pass
+                    continue
+                if a >= 0 and b >= 0:  # -1 = update ended before this stage; not a count
+                    tri += a; passed += b
     return 100 * passed / tri if tri else float('nan')
 
 def gate_groups(dirs):
