@@ -4,6 +4,10 @@ Usage: ~/navcore_ws/.venv/bin/python scripts/t4b_summary.py
 Writes ~/navcore_ws/results/t4b_summary.csv."""
 import os, sys, subprocess, csv, math
 import numpy as np
+import gzip
+def opentext(p):
+    """Open a text file, or its .gz copy if only that exists."""
+    return gzip.open(p + '.gz', 'rt') if not os.path.exists(p) and os.path.exists(p + '.gz') else open(p)
 try:
     from scipy import stats
 except ImportError:
@@ -54,9 +58,9 @@ def gate_overall(dirs):
     tri = passed = 0
     for d in dirs:
         p = os.path.join(d, 'gate.csv')
-        if not os.path.exists(p):
+        if not (os.path.exists(p) or os.path.exists(p + '.gz')):
             continue
-        with open(p) as fh:
+        with opentext(p) as fh:
             next(fh)
             for line in fh:
                 r = line.split(',')
@@ -73,9 +77,9 @@ def gate_groups(dirs):
     for d in dirs:
         for fn in ('gate_feat.csv', 'gate_slam.csv'):
             p = os.path.join(d, fn)
-            if not os.path.exists(p):
+            if not (os.path.exists(p) or os.path.exists(p + '.gz')):
                 continue
-            with open(p) as fh:
+            with opentext(p) as fh:
                 next(fh)
                 for line in fh:
                     t, kind, fid, st, su, dof, chi2, thr, a = line.rstrip('\n').split(',')

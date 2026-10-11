@@ -4,6 +4,10 @@ Also per-feature@1.5 vs pooled@1.0 and vs stock fixed R. udel_gore, T.3b uneven-
 Usage: ~/navcore_ws/.venv/bin/python scripts/t4cal_summary.py   -> writes results/t4cal_summary.csv"""
 import os, sys, subprocess, csv, math
 import numpy as np
+import gzip
+def opentext(p):
+    """Open a text file, or its .gz copy if only that exists."""
+    return gzip.open(p + '.gz', 'rt') if not os.path.exists(p) and os.path.exists(p + '.gz') else open(p)
 from scipy import stats
 
 HOME = os.path.expanduser('~'); RES = HOME + '/navcore_ws/results'
@@ -45,9 +49,9 @@ def gate_groups(ds):
     for d in ds:
         for fn in ('gate_feat.csv', 'gate_slam.csv'):
             p = d + '/' + fn
-            if not os.path.exists(p):
+            if not (os.path.exists(p) or os.path.exists(p + '.gz')):
                 continue
-            with open(p) as fh:
+            with opentext(p) as fh:
                 next(fh)
                 for line in fh:
                     t, kind, fid, st, su, dof, chi2, thr, a = line.rstrip('\n').split(',')

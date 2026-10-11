@@ -27,7 +27,10 @@ for seed in $(seq 1 $NSEEDS); do
         if grep -q "^elapsed_s=" "$OUT/run.log" 2>/dev/null; then
           echo "[$i/$TOTAL] skip (already done): $method $traj $COND seed=$seed"; continue
         fi
+        FREE=$(df --output=avail -k ~ | tail -1)
+        if [ "$FREE" -lt 2000000 ]; then echo "ABORT: less than 2 GB free on disk"; exit 1; fi
         $S $traj $seed 1.0 $F $B $ROOT 2>&1 | sed "s|^|[$i/$TOTAL] $(date +%H:%M) $method |"
+        if ! grep -q "^elapsed_s=" "$OUT/run.log" 2>/dev/null; then echo "ABORT: run did not finish in $OUT (disk full or crash?)"; exit 1; fi
         if [ -z "$WANT" ]; then
           if grep -q "NavCore\] R mode" "$OUT/run.log" 2>/dev/null; then echo "ABORT: fixed run shows a NavCore mode in $OUT"; exit 1; fi
         elif ! grep -q "NavCore\] $WANT" "$OUT/run.log" 2>/dev/null; then
