@@ -22,6 +22,12 @@ if [ -n "$NPTS" ]; then
   COND=${COND}_n${NPTS}
   EXTRA=(-p num_pts:=$NPTS)   # integer param, no decimal
 fi
+# Optional filter-side sigma (tuned-fixed baseline). Unset = config value, unchanged behaviour.
+FSIG=""
+if [ -n "${NAVCORE_FILTER_SIGMA:-}" ]; then
+  FSIG=$(printf "%.3f" "$NAVCORE_FILTER_SIGMA")
+  EXTRA+=(-p up_msckf_sigma_px:=$FSIG -p up_slam_sigma_px:=$FSIG)
+fi
 OUT=$ROOT/$TRAJ/$COND/seed${SEED}
 mkdir -p "$OUT"
 
@@ -40,6 +46,7 @@ NAVCORE_GATE_LOG=$OUT/gate.csv timeout -s INT -k 30 900 ros2 run ov_msckf run_si
   -p filepath_std:=$OUT/state_deviation.txt \
   -p filepath_gt:=$OUT/state_groundtruth.txt \
   > "$OUT/run.log" 2>&1 || true
+if [ -n "$FSIG" ]; then echo "[NavCore-wrapper] filter sigma override $FSIG" >> "$OUT/run.log"; fi
 echo "elapsed_s=$(( $(date +%s) - START ))" >> "$OUT/run.log"
 
 # Sanity: confirm the run used the requested noise settings
