@@ -165,7 +165,9 @@ def fig1(args):
     ax[0].plot([], [], color='0.4', ls='-', lw=1.4, label=f'lost track (ATE > {LOST:g} m)')
     ax[0].plot([], [], color='0.4', ls='--', lw=0.9, label=f'diverged (ATE > {DIV:g} m)')
     ax[0].set_xlabel('true pixel noise σ (px)'); ax[0].set_ylabel('runs (%)'); ax[0].set_ylim(-3, 103)
-    ax[0].legend(loc='center right', frameon=False, fontsize=6.8); ax[0].set_title('(a) failures vs noise')
+    h, l = ax[0].get_legend_handles_labels()
+    fig.legend(h, l, loc='upper center', bbox_to_anchor=(0.5, -0.06), ncol=3, frameon=False, fontsize=7)
+    ax[0].set_title('(a) failures vs noise')
     ax[1].set_xlabel('noise ratio σ / σ0 (true / assumed)'); ax[1].set_ylabel('runs lost track (%)'); ax[1].set_ylim(-3, 103)
     ax[1].set_title('(b) fixed R fails at the same ratio'); ax[1].axvspan(1.33, 1.75, color='0.85', alpha=0.6, lw=0)
     save(fig, 'fig1_divergence_cliff',
