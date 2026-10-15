@@ -4,6 +4,10 @@
 // NavCore T.4: per-feature measurement noise, simulation-oracle test path.
 //   NAVCORE_R_MODE        unset or 0: stock filter (bit-identical); 1: oracle per-feature sigma
 //   NAVCORE_ORACLE_SCALE  beta, multiplies the oracle sigma (default 1.0)
+//   T.4d G1: NAVCORE_R_MODE=3: stereo epipolar sigma estimate (computed in VioManager), shrunk toward the
+//            frame mean with NAVCORE_EPI_NU0 pseudo-samples (default 5); beta applies as in mode 1.
+//            NAVCORE_ORACLE_LOGSD (mode 1): noisy oracle, one log-normal factor per feature with this
+//            spread (default 0 = exact oracle), seeded by NAVCORE_NOISE_SEED.
 // The oracle is connected only in run_simulation.cpp. Without it, mode 1 falls back to nominal noise.
 
 #include <cstdio>
@@ -13,6 +17,8 @@
 #include <fstream>
 #include <iomanip>
 #include <string>
+#include <unordered_map>
+#include <utility>
 
 namespace ov_msckf {
 
@@ -28,6 +34,8 @@ public:
 
   /// Pixel variance to use for this feature; nominal_sq unless mode 1 with an oracle connected
   double sigma_sq(size_t featid, double nominal_sq) {
+    if (mode == 3) // T.4d G1: stereo epipolar estimate (estimator document, Sec. 3.2)
+      return scale * scale * epi_sigma_sq(featid, nominal_sq);
     if (mode == 2) // T.4b: one pooled value for every feature in the frame (set by the simulator loop)
       return (pool_sigma_sq > 0.0) ? scale * scale * pool_sigma_sq : nominal_sq;
     if (mode != 1)
@@ -39,13 +47,48 @@ public:
       }
       return nominal_sq;
     }
-    const double s = scale * oracle_sigma(featid);
+    double s = scale * oracle_sigma(featid);
+    if (oracle_logsd > 0.0) // T.4d G1: noisy oracle, one fixed log-normal factor per feature
+      s *= std::exp(oracle_logsd * unit_normal(featid));
     return s * s;
   }
 
   int mode = 0;
   double pool_sigma_sq = -1.0; ///< T.4b: mean true sigma^2 over the current frame (mode 2)
   double scale = 1.0;
+  double epi_nu0 = 5.0;              ///< T.4d G1, mode 3: prior weight in pseudo-samples
+  double oracle_logsd = 0.0;         ///< T.4d G1, mode 1: log-spread of the noisy oracle
+  unsigned long long noise_seed = 0; ///< T.4d G1: seed of that error
+  double epi_pool = -1.0;            ///< T.4d G1, mode 3: mean Sampson d^2 over the current frame (px^2)
+
+  /// T.4d G1, mode 3: called by VioManager once per frame, before the updates
+  void epi_begin_frame() {
+    epi_fsum = 0.0;
+    epi_fn = 0;
+  }
+  void epi_add(size_t featid, double d2) {
+    auto &a = epi_acc[featid];
+    a.first += d2;
+    a.second += 1.0;
+    epi_fsum += d2;
+    epi_fn++;
+  }
+  void epi_end_frame() {
+    if (epi_fn > 0)
+      epi_pool = epi_fsum / epi_fn;
+  }
+  /// (nu0 * frame mean + sum of the feature's d^2) / (nu0 + its number of samples), px^2, before beta
+  double epi_sigma_sq(size_t featid, double nominal_sq) const {
+    if (!(epi_pool > 0.0))
+      return nominal_sq;
+    double S = 0.0, m = 0.0;
+    auto it = epi_acc.find(featid);
+    if (it != epi_acc.end()) {
+      S = it->second.first;
+      m = it->second.second;
+    }
+    return (epi_nu0 + m > 0.0) ? (epi_nu0 * epi_pool + S) / (epi_nu0 + m) : epi_pool;
+  }
 
 private:
   NavcoreNoise() {
@@ -55,8 +98,32 @@ private:
       scale = std::atof(b);
     if (mode != 0)
       std::fprintf(stderr, "[NavCore] R mode %d, oracle scale %.3f\n", mode, scale);
+    if (const char *v = std::getenv("NAVCORE_EPI_NU0"))
+      epi_nu0 = std::atof(v);
+    if (const char *v = std::getenv("NAVCORE_ORACLE_LOGSD"))
+      oracle_logsd = std::atof(v);
+    if (const char *v = std::getenv("NAVCORE_NOISE_SEED"))
+      noise_seed = std::strtoull(v, nullptr, 10);
+    if (mode == 3 || oracle_logsd > 0.0)
+      std::fprintf(stderr, "[NavCore] G1: epi nu0 %.2f, oracle logsd %.3f, noise seed %llu\n", epi_nu0, oracle_logsd, noise_seed);
   }
   bool warned = false;
+  std::unordered_map<size_t, std::pair<double, double>> epi_acc; ///< T.4d G1: featid -> (sum of d^2, count)
+  double epi_fsum = 0.0;
+  int epi_fn = 0;
+  /// T.4d G1: deterministic N(0,1) per (feature id, noise seed): splitmix64, then Box-Muller
+  double unit_normal(size_t featid) const {
+    auto mix = [](unsigned long long z) {
+      z += 0x9E3779B97F4A7C15ULL;
+      z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+      z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+      return z ^ (z >> 31);
+    };
+    const unsigned long long a = mix(mix((unsigned long long)featid) ^ mix(noise_seed + 0x5851F42D4C957F2DULL));
+    const unsigned long long b = mix(a);
+    const double u1 = ((a >> 11) + 0.5) / 9007199254740992.0, u2 = ((b >> 11) + 0.5) / 9007199254740992.0;
+    return std::sqrt(-2.0 * std::log(u1)) * std::cos(6.283185307179586 * u2);
+  }
 };
 
 

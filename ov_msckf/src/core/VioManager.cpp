@@ -28,6 +28,7 @@
 #include "track/TrackDescriptor.h"
 #include "track/TrackKLT.h"
 #include "track/TrackSIM.h"
+#include "update/NavcoreNoise.h"
 #include "types/Landmark.h"
 #include "types/LandmarkRepresentation.h"
 #include "utils/opencv_lambda_body.h"
@@ -366,6 +367,49 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   // Now, lets get all features that should be used for an update that are lost in the newest frame
   // We explicitly request features that have not been deleted (used) in another update step
   std::vector<std::shared_ptr<Feature>> feats_lost, feats_marg, feats_slam;
+  // NavCore T.4d G1 (NAVCORE_R_MODE=3 only; skipped otherwise, so the stock path is unchanged).
+  // One noise sample per stereo observation of this frame: the Sampson distance to the epipolar line, with the
+  // distortion Jacobian, so that E[d2] = sigma_px^2 to first order for noise added to distorted pixels.
+  // Uses only the camera calibration, not the filter's motion estimate. NavcoreNoise::sigma_sq then serves both updaters.
+  if (NavcoreNoise::get().mode == 3 && state->_calib_IMUtoCAM.count(0) && state->_calib_IMUtoCAM.count(1)) {
+    const Eigen::Matrix3d R01 = state->_calib_IMUtoCAM.at(1)->Rot() * state->_calib_IMUtoCAM.at(0)->Rot().transpose();
+    const Eigen::Vector3d t01 = state->_calib_IMUtoCAM.at(1)->pos() - R01 * state->_calib_IMUtoCAM.at(0)->pos();
+    Eigen::Matrix3d t01x;
+    t01x << 0, -t01(2), t01(1), t01(2), 0, -t01(0), -t01(1), t01(0), 0;
+    const Eigen::Matrix3d E01 = t01x * R01; // x1^T E01 x0 = 0 for a point seen at x0 in cam 0 and x1 in cam 1
+    auto navcore_obs = [&](const std::shared_ptr<Feature> &f, size_t cam, Eigen::Vector2d &uvn) {
+      auto it = f->timestamps.find(cam);
+      if (it == f->timestamps.end())
+        return false;
+      for (size_t k = 0; k < it->second.size(); k++) {
+        if (it->second.at(k) == state->_timestamp) {
+          uvn = f->uvs_norm.at(cam).at(k).cast<double>();
+          return true;
+        }
+      }
+      return false;
+    };
+    NavcoreNoise &navcore_nn = NavcoreNoise::get();
+    navcore_nn.epi_begin_frame();
+    for (const auto &f : trackFEATS->get_feature_database()->features_containing(state->_timestamp, false, true)) {
+      Eigen::Vector2d n0, n1;
+      if (!navcore_obs(f, 0, n0) || !navcore_obs(f, 1, n1))
+        continue;
+      const Eigen::Vector3d x0(n0(0), n0(1), 1.0), x1(n1(0), n1(1), 1.0);
+      const Eigen::Vector3d l1 = E01 * x0, l0 = E01.transpose() * x1;
+      Eigen::MatrixXd J0, J1, Jzeta;
+      state->_cam_intrinsics_cameras.at(0)->compute_distort_jacobian(n0, J0, Jzeta);
+      state->_cam_intrinsics_cameras.at(1)->compute_distort_jacobian(n1, J1, Jzeta);
+      const Eigen::Matrix2d J0t = J0.topLeftCorner<2, 2>().transpose(), J1t = J1.topLeftCorner<2, 2>().transpose();
+      const Eigen::Vector2d g0 = J0t.inverse() * l0.head<2>(), g1 = J1t.inverse() * l1.head<2>(); // d eps / d pixel
+      const double den = g0.squaredNorm() + g1.squaredNorm();
+      const double eps = x1.dot(l1);
+      if (den > 0.0 && std::isfinite(eps))
+        navcore_nn.epi_add(f->featid, eps * eps / den);
+    }
+    navcore_nn.epi_end_frame();
+  }
+
   feats_lost = trackFEATS->get_feature_database()->features_not_containing_newer(state->_timestamp, false, true);
 
   // Don't need to get the oldest features until we reach our max number of clones
