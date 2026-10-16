@@ -8,6 +8,8 @@
 //            frame mean with NAVCORE_EPI_NU0 pseudo-samples (default 5); beta applies as in mode 1.
 //            NAVCORE_ORACLE_LOGSD (mode 1): noisy oracle, one log-normal factor per feature with this
 //            spread (default 0 = exact oracle), seeded by NAVCORE_NOISE_SEED.
+//   T.4d G1b: NAVCORE_R_MODE=4: robust frame level L (25th percentile of per-feature means); a feature gets
+//            its own value only if clearly noisier than L (chi-square test, 1%); otherwise L. Beta applies.
 // The oracle is connected only in run_simulation.cpp. Without it, mode 1 falls back to nominal noise.
 
 #include <cstdio>
@@ -19,6 +21,8 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <algorithm>
+#include <vector>
 
 namespace ov_msckf {
 
@@ -36,6 +40,8 @@ public:
   double sigma_sq(size_t featid, double nominal_sq) {
     if (mode == 3) // T.4d G1: stereo epipolar estimate (estimator document, Sec. 3.2)
       return scale * scale * epi_sigma_sq(featid, nominal_sq);
+    if (mode == 4) // T.4d G1b: robust frame level; own value only if clearly noisier
+      return scale * scale * g1b_sigma_sq(featid, nominal_sq);
     if (mode == 2) // T.4b: one pooled value for every feature in the frame (set by the simulator loop)
       return (pool_sigma_sq > 0.0) ? scale * scale * pool_sigma_sq : nominal_sq;
     if (mode != 1)
@@ -65,6 +71,8 @@ public:
   void epi_begin_frame() {
     epi_fsum = 0.0;
     epi_fn = 0;
+    epi_frame_ids.clear();
+    epi_frame_d2.clear();
   }
   void epi_add(size_t featid, double d2) {
     auto &a = epi_acc[featid];
@@ -72,10 +80,14 @@ public:
     a.second += 1.0;
     epi_fsum += d2;
     epi_fn++;
+    epi_frame_ids.push_back(featid);
+    epi_frame_d2.push_back(d2);
   }
   void epi_end_frame() {
     if (epi_fn > 0)
       epi_pool = epi_fsum / epi_fn;
+    if (mode == 4)
+      g1b_update_level();
   }
   /// (nu0 * frame mean + sum of the feature's d^2) / (nu0 + its number of samples), px^2, before beta
   double epi_sigma_sq(size_t featid, double nominal_sq) const {
@@ -88,6 +100,52 @@ public:
       m = it->second.second;
     }
     return (epi_nu0 + m > 0.0) ? (epi_nu0 * epi_pool + S) / (epi_nu0 + m) : epi_pool;
+  }
+
+  // ---- T.4d G1b (mode 4) ----
+  double g1b_level = -1.0;      ///< robust frame level L (px^2), before beta
+  double g1b_z = 2.3263479;     ///< normal score of the 1% test (one-sided)
+  double g1b_q = 0.25;          ///< quantile of the per-feature means used for L
+  double g1b_zq = -0.6744898;   ///< its normal score
+  double g1b_min_test = 3.0, g1b_min_level = 5.0;
+  /// Wilson-Hilferty: the point of chi2(m) at normal score z
+  static double chi2_point(double m, double z) {
+    const double a = 2.0 / (9.0 * m), c = 1.0 - a + z * std::sqrt(a);
+    return m * c * c * c;
+  }
+  void g1b_update_level() {
+    std::vector<double> means, ms;
+    for (size_t id : epi_frame_ids) {
+      auto it = epi_acc.find(id);
+      if (it != epi_acc.end() && it->second.second >= g1b_min_level) {
+        means.push_back(it->second.first / it->second.second);
+        ms.push_back(it->second.second);
+      }
+    }
+    if (means.size() >= 10) {
+      const size_t k = (size_t)(g1b_q * (means.size() - 1));
+      std::nth_element(means.begin(), means.begin() + k, means.end());
+      std::nth_element(ms.begin(), ms.begin() + ms.size() / 2, ms.end());
+      const double mm = ms[ms.size() / 2];
+      g1b_level = means[k] / (chi2_point(mm, g1b_zq) / mm);
+    } else if (epi_frame_d2.size() >= 10 && !(g1b_level > 0.0)) {
+      // start-up only: median single sample over the median of chi2(1)
+      std::vector<double> d = epi_frame_d2;
+      std::nth_element(d.begin(), d.begin() + d.size() / 2, d.end());
+      g1b_level = d[d.size() / 2] / 0.4549364;
+    }
+  }
+  /// L, or the feature's own mean if S/L exceeds the 99% point of chi2(m)
+  double g1b_sigma_sq(size_t featid, double nominal_sq) const {
+    if (!(g1b_level > 0.0))
+      return nominal_sq;
+    auto it = epi_acc.find(featid);
+    if (it == epi_acc.end() || it->second.second < g1b_min_test)
+      return g1b_level;
+    const double S = it->second.first, m = it->second.second;
+    if (S / g1b_level > chi2_point(m, g1b_z))
+      return std::max(g1b_level, S / m);
+    return g1b_level;
   }
 
 private:
@@ -106,11 +164,16 @@ private:
       noise_seed = std::strtoull(v, nullptr, 10);
     if (mode == 3 || oracle_logsd > 0.0)
       std::fprintf(stderr, "[NavCore] G1: epi nu0 %.2f, oracle logsd %.3f, noise seed %llu\n", epi_nu0, oracle_logsd, noise_seed);
+    if (mode == 4)
+      std::fprintf(stderr, "[NavCore] G1b: level quantile %.2f, flag test 1%%, min samples %.0f/%.0f, noise seed %llu\n", g1b_q,
+                   g1b_min_test, g1b_min_level, noise_seed);
   }
   bool warned = false;
   std::unordered_map<size_t, std::pair<double, double>> epi_acc; ///< T.4d G1: featid -> (sum of d^2, count)
   double epi_fsum = 0.0;
   int epi_fn = 0;
+  std::vector<size_t> epi_frame_ids; ///< T.4d G1b: features seen in stereo this frame
+  std::vector<double> epi_frame_d2;   ///< T.4d G1b: their samples this frame
   /// T.4d G1: deterministic N(0,1) per (feature id, noise seed): splitmix64, then Box-Muller
   double unit_normal(size_t featid) const {
     auto mix = [](unsigned long long z) {

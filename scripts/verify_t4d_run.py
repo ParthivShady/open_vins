@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """NavCore T.4d G1: verify one run from its own records (run.log [NavCore] lines and the per-feature gate logs).
-Usage: verify_t4d_run.py <run_dir> <mode> <beta> <nu0> <logsd> <seed>
+Usage: verify_t4d_run.py <run_dir> <mode> <beta> <nu0> <logsd> <seed> [tuned]
+("tuned": stock filter with the tuned-fixed override, sigma 1.5 for every feature; mode must be 0.)
 Prints 'OK ...' and exits 0 if the run used the intended settings, otherwise prints 'FAIL ...' and exits 1.
 Checks: the plain [NavCore] lines (mode, beta, nu0, log-spread, seed, simulator noise); a complete state file;
 sigma_used in every MSCKF and SLAM row: stock = nominal; exact oracle = beta * sigma_true; noisy oracle = one fixed
 factor per feature with log-spread close to the requested one; epipolar estimate = varies between features and is
-of the right size (a units error would be off by a factor of hundreds)."""
+of the right size (a units error would be off by a factor of hundreds); G1b (mode 4) the same, with its own line."""
 import gzip, os, sys
 import numpy as np
 
@@ -36,14 +37,15 @@ def spearman(a, b):
     return float(np.corrcoef(ra, rb)[0, 1])
 
 
-def check_rows(G, mode, beta, logsd, name):
+def check_rows(G, mode, beta, logsd, name, tuned=False):
     """returns (error or None, short summary)"""
     fid, st, su = G[:, 0], G[:, 1], G[:, 2]
     if np.mean(np.isfinite(st)) < 0.99:
         return f'{name}: sigma_true missing in {100 * np.mean(~np.isfinite(st)):.1f}% of rows (oracle not connected?)', ''
     if mode == 0:
-        bad = np.abs(su - su[0]) > 1e-6 * su[0]
-        return (f'{name}: stock run but sigma_used varies' if bad.any() else None), f'{name} sigma_used {su[0]:g}'
+        want = 1.5 if tuned else su[0]
+        bad = np.abs(su - want) > 1e-6 * want
+        return (f'{name}: fixed run but sigma_used is not {want:g} everywhere' if bad.any() else None), f'{name} sigma_used {su[0]:g}'
     if mode == 1 and logsd == 0:
         err = np.max(np.abs(su / (beta * st) - 1))
         return (f'{name}: sigma_used != beta*sigma_true (max rel err {err:.2e})' if err > 1e-4 else None), f'{name} exact'
@@ -61,7 +63,7 @@ def check_rows(G, mode, beta, logsd, name):
         if not (0.8 * logsd <= sd <= 1.2 * logsd) or abs(mu) > 0.1:
             return f'{name}: noisy-oracle spread off: ' + msg, msg
         return None, msg
-    if mode == 3:
+    if mode in (3, 4):
         q = su / (beta * st)
         clean = st <= np.min(st) + 1e-9
         qc, qn = float(np.median(q[clean])), (float(np.median(q[~clean])) if (~clean).any() else float('nan'))
@@ -69,24 +71,29 @@ def check_rows(G, mode, beta, logsd, name):
         rho = spearman(su, st) if (~clean).any() and clean.any() else float('nan')
         msg = f'{name} {nd} distinct values; median sigma_hat/sigma_true clean {qc:.2f}, noisy {qn:.2f}; rank corr {rho:.2f}'
         if nd < 50:
-            return f'{name}: epipolar sigma barely varies ({nd} distinct values)', msg
+            return f'{name}: estimated sigma barely varies ({nd} distinct values)', msg
         if not 0.5 <= qc <= 2.5 or (np.isfinite(qn) and not 0.3 <= qn <= 2.5):
-            return f'{name}: epipolar sigma has the wrong size: ' + msg, msg
+            return f'{name}: estimated sigma has the wrong size: ' + msg, msg
         return None, msg
     return f'unknown mode {mode}', ''
 
 
 def main():
-    if len(sys.argv) != 7:
+    if len(sys.argv) not in (7, 8) or (len(sys.argv) == 8 and sys.argv[7] != 'tuned'):
         sys.exit(__doc__)
     d, mode, beta, nu0, logsd, seed = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5]), int(sys.argv[6])
+    tuned = len(sys.argv) == 8
+    if tuned and mode != 0:
+        sys.exit('tuned runs must be mode 0')
     fail = []
     log = read(d + '/run.log')
     if log is None:
         print(f'FAIL {d}: no run.log'); sys.exit(1)
     if '[NavCore] sim noise:' not in log:
         fail.append('no [NavCore] sim noise line')
-    if '[NavCore-wrapper] filter sigma override' in log:
+    if tuned and '[NavCore-wrapper] filter sigma override 1.500' not in log:
+        fail.append('tuned run without the override line (NAVCORE_FILTER_SIGMA=1.5 not passed)')
+    if not tuned and '[NavCore-wrapper] filter sigma override' in log:
         fail.append('tuned-fixed override was active (NAVCORE_FILTER_SIGMA set)')
     want = f'[NavCore] R mode {mode}, oracle scale {beta:.3f}'
     if mode == 0 and '[NavCore] R mode' in log:
@@ -96,6 +103,9 @@ def main():
     g1 = f'[NavCore] G1: epi nu0 {nu0:.2f}, oracle logsd {logsd:.3f}, noise seed {seed}'
     if (mode == 3 or (mode == 1 and logsd > 0)) and g1 not in log:
         fail.append(f'missing line: {g1}')
+    g1b = f'[NavCore] G1b: level quantile 0.25, flag test 1%, min samples 3/5, noise seed {seed}'
+    if mode == 4 and g1b not in log:
+        fail.append(f'missing line: {g1b}')
     est = read(d + '/state_estimate.txt')
     if est is None or sum(1 for l in est.splitlines() if l and not l.startswith('#')) < 100:
         fail.append('state_estimate.txt missing or short')
@@ -105,7 +115,7 @@ def main():
         if err or G is None or len(G) < need:
             fail.append(f'{fn}: {err or "too few rows (%d)" % (0 if G is None else len(G))}')
             continue
-        e, msg = check_rows(G, mode, beta, logsd, name)
+        e, msg = check_rows(G, mode, beta, logsd, name, tuned)
         notes.append(msg)
         if e:
             fail.append(e)
