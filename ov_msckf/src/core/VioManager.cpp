@@ -372,7 +372,8 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   // distortion Jacobian, so that E[d2] = sigma_px^2 to first order for noise added to distorted pixels.
   // Uses only the camera calibration, not the filter's motion estimate. NavcoreNoise::sigma_sq then serves both updaters.
   // T.4d G1b: mode 4 uses the same stereo samples
-  if ((NavcoreNoise::get().mode == 3 || NavcoreNoise::get().mode == 4) && state->_calib_IMUtoCAM.count(0) &&
+  if ((NavcoreNoise::get().mode == 3 || NavcoreNoise::get().mode == 4 || NavcoreNoise::get().mode == 5) && // T.4d G1c
+      state->_calib_IMUtoCAM.count(0) &&
       state->_calib_IMUtoCAM.count(1)) {
     const Eigen::Matrix3d R01 = state->_calib_IMUtoCAM.at(1)->Rot() * state->_calib_IMUtoCAM.at(0)->Rot().transpose();
     const Eigen::Vector3d t01 = state->_calib_IMUtoCAM.at(1)->pos() - R01 * state->_calib_IMUtoCAM.at(0)->pos();

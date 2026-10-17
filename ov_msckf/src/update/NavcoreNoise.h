@@ -10,6 +10,8 @@
 //            spread (default 0 = exact oracle), seeded by NAVCORE_NOISE_SEED.
 //   T.4d G1b: NAVCORE_R_MODE=4: robust frame level L (25th percentile of per-feature means); a feature gets
 //            its own value only if clearly noisier than L (chi-square test, 1%); otherwise L. Beta applies.
+//   T.4d G1c: NAVCORE_R_MODE=5: configured sigma as a floor, raised to beta^2 L when the frame is noisier;
+//            flagged features add beta^2 (S/m - L). L uses per-feature normalisation (exact for mixed m).
 // The oracle is connected only in run_simulation.cpp. Without it, mode 1 falls back to nominal noise.
 
 #include <cstdio>
@@ -40,6 +42,8 @@ public:
   double sigma_sq(size_t featid, double nominal_sq) {
     if (mode == 3) // T.4d G1: stereo epipolar estimate (estimator document, Sec. 3.2)
       return scale * scale * epi_sigma_sq(featid, nominal_sq);
+    if (mode == 5) // T.4d G1c: configured noise as a floor; flagged features add their measured excess
+      return g1c_sigma_sq(featid, nominal_sq);
     if (mode == 4) // T.4d G1b: robust frame level; own value only if clearly noisier
       return scale * scale * g1b_sigma_sq(featid, nominal_sq);
     if (mode == 2) // T.4b: one pooled value for every feature in the frame (set by the simulator loop)
@@ -88,6 +92,8 @@ public:
       epi_pool = epi_fsum / epi_fn;
     if (mode == 4)
       g1b_update_level();
+    if (mode == 5)
+      g1c_update_level();
   }
   /// (nu0 * frame mean + sum of the feature's d^2) / (nu0 + its number of samples), px^2, before beta
   double epi_sigma_sq(size_t featid, double nominal_sq) const {
@@ -135,6 +141,40 @@ public:
       g1b_level = d[d.size() / 2] / 0.4549364;
     }
   }
+  // ---- T.4d G1c (mode 5) ----
+  /// L from per-feature means each divided by its own chi2(m)/m quantile: exact for any mix of track lengths
+  void g1c_update_level() {
+    std::vector<double> z;
+    for (size_t id : epi_frame_ids) {
+      auto it = epi_acc.find(id);
+      if (it != epi_acc.end() && it->second.second >= g1b_min_level) {
+        const double m = it->second.second;
+        z.push_back((it->second.first / m) / (chi2_point(m, g1b_zq) / m));
+      }
+    }
+    if (z.size() >= 10) {
+      const size_t k = (size_t)(g1b_q * (z.size() - 1));
+      std::nth_element(z.begin(), z.begin() + k, z.end());
+      g1b_level = z[k];
+    } else if (epi_frame_d2.size() >= 10 && !(g1b_level > 0.0)) {
+      std::vector<double> d = epi_frame_d2;   // start-up only
+      std::nth_element(d.begin(), d.begin() + d.size() / 2, d.end());
+      g1b_level = d[d.size() / 2] / 0.4549364;
+    }
+  }
+  /// max(configured, beta^2 L), plus beta^2 (S/m - L) for a feature clearly noisier than L. Includes beta.
+  double g1c_sigma_sq(size_t featid, double nominal_sq) const {
+    if (!(g1b_level > 0.0))
+      return nominal_sq;
+    const double base = std::max(nominal_sq, scale * scale * g1b_level);
+    auto it = epi_acc.find(featid);
+    if (it == epi_acc.end() || it->second.second < g1b_min_test)
+      return base;
+    const double S = it->second.first, m = it->second.second;
+    if (S / g1b_level > chi2_point(m, g1b_z))
+      return base + scale * scale * std::max(0.0, S / m - g1b_level);
+    return base;
+  }
   /// L, or the feature's own mean if S/L exceeds the 99% point of chi2(m)
   double g1b_sigma_sq(size_t featid, double nominal_sq) const {
     if (!(g1b_level > 0.0))
@@ -164,6 +204,9 @@ private:
       noise_seed = std::strtoull(v, nullptr, 10);
     if (mode == 3 || oracle_logsd > 0.0)
       std::fprintf(stderr, "[NavCore] G1: epi nu0 %.2f, oracle logsd %.3f, noise seed %llu\n", epi_nu0, oracle_logsd, noise_seed);
+    if (mode == 5)
+      std::fprintf(stderr, "[NavCore] G1c: floor = configured sigma, level quantile %.2f per-feature normalised, flag test 1%%, noise seed %llu\n",
+                   g1b_q, noise_seed);
     if (mode == 4)
       std::fprintf(stderr, "[NavCore] G1b: level quantile %.2f, flag test 1%%, min samples %.0f/%.0f, noise seed %llu\n", g1b_q,
                    g1b_min_test, g1b_min_level, noise_seed);

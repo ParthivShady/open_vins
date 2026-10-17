@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """NavCore T.4d G1: verify one run from its own records (run.log [NavCore] lines and the per-feature gate logs).
 Usage: verify_t4d_run.py <run_dir> <mode> <beta> <nu0> <logsd> <seed> [tuned]
-("tuned": stock filter with the tuned-fixed override, sigma 1.5 for every feature; mode must be 0.)
+("tuned": the tuned-fixed override, configured sigma 1.5; mode 0 = tuned fixed, mode 5 = G1c with that floor.)
 Prints 'OK ...' and exits 0 if the run used the intended settings, otherwise prints 'FAIL ...' and exits 1.
 Checks: the plain [NavCore] lines (mode, beta, nu0, log-spread, seed, simulator noise); a complete state file;
 sigma_used in every MSCKF and SLAM row: stock = nominal; exact oracle = beta * sigma_true; noisy oracle = one fixed
@@ -63,13 +63,15 @@ def check_rows(G, mode, beta, logsd, name, tuned=False):
         if not (0.8 * logsd <= sd <= 1.2 * logsd) or abs(mu) > 0.1:
             return f'{name}: noisy-oracle spread off: ' + msg, msg
         return None, msg
-    if mode in (3, 4):
+    if mode in (3, 4, 5):
         q = su / (beta * st)
         clean = st <= np.min(st) + 1e-9
         qc, qn = float(np.median(q[clean])), (float(np.median(q[~clean])) if (~clean).any() else float('nan'))
         nd = len(np.unique(np.round(su, 5)))
         rho = spearman(su, st) if (~clean).any() and clean.any() else float('nan')
         msg = f'{name} {nd} distinct values; median sigma_hat/sigma_true clean {qc:.2f}, noisy {qn:.2f}; rank corr {rho:.2f}'
+        if mode == 5 and tuned and np.min(su) < 1.5 * (1 - 1e-6):
+            return f'{name}: G1c went below its 1.5 px floor (min {np.min(su):.4f})', msg
         if nd < 50:
             return f'{name}: estimated sigma barely varies ({nd} distinct values)', msg
         if not 0.5 <= qc <= 2.5 or (np.isfinite(qn) and not 0.3 <= qn <= 2.5):
@@ -83,8 +85,8 @@ def main():
         sys.exit(__doc__)
     d, mode, beta, nu0, logsd, seed = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5]), int(sys.argv[6])
     tuned = len(sys.argv) == 8
-    if tuned and mode != 0:
-        sys.exit('tuned runs must be mode 0')
+    if tuned and mode not in (0, 5):
+        sys.exit('tuned runs must be mode 0 or 5')
     fail = []
     log = read(d + '/run.log')
     if log is None:
@@ -106,6 +108,11 @@ def main():
     g1b = f'[NavCore] G1b: level quantile 0.25, flag test 1%, min samples 3/5, noise seed {seed}'
     if mode == 4 and g1b not in log:
         fail.append(f'missing line: {g1b}')
+    g1c = f'[NavCore] G1c: floor = configured sigma, level quantile 0.25 per-feature normalised, flag test 1%, noise seed {seed}'
+    if mode == 5 and g1c not in log:
+        fail.append(f'missing line: {g1c}')
+    if mode == 5 and not tuned:
+        fail.append('G1c runs are checked with the tuned floor (pass tuned)')
     est = read(d + '/state_estimate.txt')
     if est is None or sum(1 for l in est.splitlines() if l and not l.startswith('#')) < 100:
         fail.append('state_estimate.txt missing or short')
