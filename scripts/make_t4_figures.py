@@ -35,7 +35,7 @@ TNAME = {'udel_gore': 'outdoor path', 'udel_gore_zupt': 'outdoor path with stops
          'euroc_V1_01_easy': 'EuRoC room'}
 SB = (1.25, 1.5, 2.5)
 C = {'stock': '#555555', 'tuned': '#E69F00', 'pooled': '#56B4E9', 'perfeat': '#009E73', 'gt': '#000000'}
-LBL = {'stock': 'fixed R, σ0 = 1 px (stock)', 'tuned': 'fixed R, σ0 = 1.5 px (tuned)',
+LBL = {'stock': 'stock fixed, σ0 = 1 px', 'tuned': 'tuned fixed, σ0 = 1.5 px',
        'pooled': 'per-image, β = 1.5', 'perfeat': 'per-feature, β = 1.5'}
 plt.rcParams.update({'font.size': 9, 'axes.titlesize': 9, 'axes.labelsize': 9, 'legend.fontsize': 8,
                      'xtick.labelsize': 8, 'ytick.labelsize': 8, 'axes.spines.top': False, 'axes.spines.right': False,
@@ -199,7 +199,7 @@ def fig2(args):
     dt = np.array(dt); rg = np.linspace(0.5, 2.6, 120)
     theo = [stats.chi2.cdf(dt[:, 1] / r ** 2, dt[:, 0]).mean() for r in rg]
     fig, ax = plt.subplots(figsize=(3.6, 2.7))
-    ax.plot(rg, 100 * np.array(theo), color='0.3', lw=1.2, label='predicted (χ² with logged dof)')
+    ax.plot(rg, 100 * np.array(theo), color='0.3', lw=1.2, label='predicted (chi-square prediction)')
     nums = []
     for m in ('stock', 'tuned', 'perfeat'):
         pts = sorted((rv, v) for (mm, rv), v in emp.items() if mm == m and v[1] > 200)
@@ -209,7 +209,7 @@ def fig2(args):
         ax.plot([p[0] for p in pts], [100 * p[1][2] / p[1][1] for p in pts], 'x', ms=5, mew=0.9, color='k', zorder=5,
                 label='predicted for that point' if m == 'stock' else None)
         nums += [f'{m} r={rv:.3f}: accepted {100 * v[0] / v[1]:.1f}% (predicted {100 * v[2] / v[1]:.1f}%, {v[1]} rows)' for rv, v in pts]
-    ax.set_xlabel('noise ratio r = σ_true / σ_used'); ax.set_ylabel('gate acceptance (%)'); ax.set_ylim(-3, 103)
+    ax.set_xlabel('noise ratio r = true σ / σ used by the filter'); ax.set_ylabel('gate acceptance (%)'); ax.set_ylim(-3, 103)
     ax.legend(frameon=False, loc='upper left', bbox_to_anchor=(1.02, 1.0), fontsize=7)
     save(fig, 'fig2_gate_theory',
          'Chi-square gate acceptance of MSCKF features against the ratio of true to assumed noise. Points: measured in the first '
@@ -301,29 +301,31 @@ def _bars(ax, groups, data, keys, ylabel):
         ci = [tci([v[0] for v in data[g][m].values()])[1] if len(data[g][m]) > 1 else 0 for g in groups]
         ax.bar(np.arange(len(groups)) + (i - (len(keys) - 1) / 2) * w, mu, w, yerr=ci, color=C[m], capsize=1.5,
                error_kw={'lw': 0.7}, label=LBL[m])
-    ax.set_xticks(range(len(groups))); ax.set_xticklabels([f'{g:g}' for g in groups]); ax.set_xlabel('noise of the noisy features (px)')
-    ax.set_ylabel(ylabel); ax.grid(axis='x', visible=False)
+    ax.set_xticks(range(len(groups))); ax.set_xticklabels([f'{g:g}' for g in groups]); ax.set_xlabel('noise of noisy\nfeatures (px)', fontsize=8)
+    ax.set_ylabel(ylabel); ax.grid(axis='x', visible=False); ax.set_ylim(0, ax.get_ylim()[1] * 1.45)
 def fig5(args):
     roots = {'stock': 't4val_fixed', 'tuned': 't4tf_val', 'pooled': 't4val_pooled_b1.50', 'perfeat': 't4val_perfeat_b1.50'}
     keys = list(roots)
-    fig, ax = plt.subplots(1, 3, figsize=(7.2, 2.5)); nums = []
+    fig, ax = plt.subplots(1, 3, figsize=(7.2, 2.9)); nums = []
     for j, tr in enumerate(HELD):
         data = {b: {m: collect(roots[m], tr, cond(1.0, 0.5, b))[0] for m in keys} for b in SB}
         _bars(ax[j], SB, data, keys, 'position error (m)' if j == 0 else ''); ax[j].set_title(TNAME[tr])
         nums += [f'{TNAME[tr]} σ_bad {b}: ' + ', '.join(f'{m} {tci([v[0] for v in data[b][m].values()])[0]:.4f}' for m in keys) for b in SB]
-    ax[0].legend(frameon=False, fontsize=7, loc='upper left')
+    ax[0].legend(frameon=False, fontsize=6.5, loc='upper left')
+    fig.subplots_adjust(wspace=0.35, top=0.86, bottom=0.26)
     save(fig, 'fig5_heldout_bars_pos',
          'Position ATE (mean and 95% t-interval over 30 seeds) on the held-out paths, half the features noisy, 250 points. '
          'udel_gore_zupt is the calibration path with stationary pauses; TUM corridor and EuRoC V1_01 are new paths.', '\n'.join(nums))
 def fig6(args):
     roots = {'stock': 't3b', 'tuned': 't4tf_t3bgrid', 'pooled': 't4cal_pooled_b1.50', 'perfeat': 't4cal_perfeat_b1.50'}
     keys = list(roots)
-    fig, ax = plt.subplots(1, 4, figsize=(7.2, 2.5)); nums = []
+    fig, ax = plt.subplots(1, 4, figsize=(7.2, 3.0)); nums = []
     for j, (n, f) in enumerate([('', 0.25), ('', 0.5), ('60', 0.25), ('60', 0.5)]):
         data = {b: {m: collect(roots[m], 'udel_gore', cond(1.0, f, b, n))[0] for m in keys} for b in SB}
-        _bars(ax[j], SB, data, keys, 'position error (m)' if j == 0 else ''); ax[j].set_title(f'{n or 250} features, {f*100:g}% noisy')
+        _bars(ax[j], SB, data, keys, 'position error (m)' if j == 0 else ''); ax[j].set_title(f'{n or 250} features\n{f*100:g}% noisy', fontsize=8)
         nums += [f'{n or 250} pts f {f} σ_bad {b}: ' + ', '.join(f'{m} {tci([v[0] for v in data[b][m].values()])[0]:.4f}' for m in keys) for b in SB]
-    ax[0].legend(frameon=False, fontsize=6.5, loc='upper left')
+    ax[0].legend(frameon=False, fontsize=6, loc='upper left')
+    fig.subplots_adjust(wspace=0.65, top=0.80, bottom=0.26)
     save(fig, 'fig6_grid_bars_pos',
          'Position ATE (mean and 95% t-interval over 30 seeds) on the T.3b grid (udel_gore), fraction f of features noisy at '
          'σ_bad, clean features at 1 px.', '\n'.join(nums))
