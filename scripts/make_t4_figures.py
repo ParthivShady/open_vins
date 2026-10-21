@@ -31,12 +31,12 @@ ATE = HOME + '/navcore_ws/src/open_vins/scripts/t3_ate.py'
 SEEDS = list(range(1, 31)); DIV = 10.0
 TRAJ3 = ['udel_gore', 'udel_gore_zupt', 'tum_corridor1_512_16_okvis']
 HELD = ['udel_gore_zupt', 'tum_corridor1_512_16_okvis', 'euroc_V1_01_easy']
-TNAME = {'udel_gore': 'udel_gore', 'udel_gore_zupt': 'udel_gore_zupt', 'tum_corridor1_512_16_okvis': 'TUM corridor',
-         'euroc_V1_01_easy': 'EuRoC V1_01'}
+TNAME = {'udel_gore': 'outdoor path', 'udel_gore_zupt': 'outdoor path with stops', 'tum_corridor1_512_16_okvis': 'indoor corridor',
+         'euroc_V1_01_easy': 'EuRoC room'}
 SB = (1.25, 1.5, 2.5)
 C = {'stock': '#555555', 'tuned': '#E69F00', 'pooled': '#56B4E9', 'perfeat': '#009E73', 'gt': '#000000'}
 LBL = {'stock': 'fixed R, σ0 = 1 px (stock)', 'tuned': 'fixed R, σ0 = 1.5 px (tuned)',
-       'pooled': 'per-frame pooled, β = 1.5', 'perfeat': 'per-feature, β = 1.5'}
+       'pooled': 'per-image, β = 1.5', 'perfeat': 'per-feature, β = 1.5'}
 plt.rcParams.update({'font.size': 9, 'axes.titlesize': 9, 'axes.labelsize': 9, 'legend.fontsize': 8,
                      'xtick.labelsize': 8, 'ytick.labelsize': 8, 'axes.spines.top': False, 'axes.spines.right': False,
                      'axes.grid': True, 'grid.alpha': 0.25, 'savefig.bbox': 'tight', 'pdf.fonttype': 42})
@@ -162,8 +162,8 @@ def fig1(args):
                            ls=ls, lw=1.4 if col == 0 else 0.9, label=lab if col == 0 else None)
             if col == 0 and s0: ax[1].errorbar(sig / s0, 100 * w[:, 0], yerr=err, marker='o', ms=4, capsize=2, color=C[m], label=lab)
         nums.append(f'{lab}: ' + ', '.join(f'σ {s:g}: lost {agg[s][0]}/{agg[s][2]} (diverged {agg[s][1]})' for s in sig))
-    ax[0].plot([], [], color='0.4', ls='-', lw=1.4, label=f'lost track (ATE > {LOST:g} m)')
-    ax[0].plot([], [], color='0.4', ls='--', lw=0.9, label=f'diverged (ATE > {DIV:g} m)')
+    ax[0].plot([], [], color='0.4', ls='-', lw=1.4, label=f'lost track (error > {LOST:g} m)')
+    ax[0].plot([], [], color='0.4', ls='--', lw=0.9, label=f'diverged (error > {DIV:g} m)')
     ax[0].set_xlabel('true pixel noise σ (px)'); ax[0].set_ylabel('runs (%)'); ax[0].set_ylim(-3, 103)
     h, l = ax[0].get_legend_handles_labels()
     fig.legend(h, l, loc='upper center', bbox_to_anchor=(0.5, -0.06), ncol=3, frameon=False, fontsize=7)
@@ -237,8 +237,8 @@ def fig3(args):
         for j in (0, 1): ax[j].plot(SB, [v[j] for v in y], 'o--' if m == 'pooled' else 'o-', color=C[m], ms=4, label=LBL[m],
                                     zorder=4 if m == 'pooled' else 3)
         nums.append(f'{m}: ' + '; '.join(f'σ_bad {b}: clean {v[0]:.1f}%, noisy {v[1]:.1f}%' for b, v in zip(SB, y)))
-    ax[0].set_title('(a) clean features (σ = 1 px)'); ax[1].set_title('(b) noisy features (σ = σ_bad)')
-    for a_ in ax: a_.set_xlabel('σ_bad (px)'); a_.set_xticks(SB); a_.set_xticklabels([f'{b:g}' for b in SB])
+    ax[0].set_title('(a) clean features (σ = 1 px)'); ax[1].set_title('(b) noisy features')
+    for a_ in ax: a_.set_xlabel('noise of the noisy features (px)'); a_.set_xticks(SB); a_.set_xticklabels([f'{b:g}' for b in SB])
     ax[0].set_ylabel('gate acceptance (%)'); ax[0].set_ylim(-3, 103); ax[0].legend(frameon=False, loc='lower left')
     save(fig, 'fig3_gate_mechanism',
          f'Gate acceptance on the held-out cells (half the features noisy, 250 points, 3 trajectories, seeds 1–{args.gate_seeds}). '
@@ -251,10 +251,10 @@ def _regime_columns():
     cols = []
     for n, nl in (('', '250'), ('60', '60')):
         for f in (0.25, 0.5):
-            for b in SB: cols.append((f'grid, {nl} pts\nf = {f:g}', b, 'udel_gore', cond(1.0, f, b, n), 'grid'))
+            for b in SB: cols.append((f'{nl} features\n{f*100:g}% noisy', b, 'udel_gore', cond(1.0, f, b, n), 'grid'))
     for tr in HELD:
-        for b in SB: cols.append(({'udel_gore_zupt': 'zupt\n(same path)', 'tum_corridor1_512_16_okvis': 'TUM\ncorridor',
-                                    'euroc_V1_01_easy': 'EuRoC\nV1_01'}[tr], b, tr, cond(1.0, 0.5, b), 'held'))
+        for b in SB: cols.append(({'udel_gore_zupt': 'outdoor\nwith stops', 'tum_corridor1_512_16_okvis': 'indoor\ncorridor',
+                                    'euroc_V1_01_easy': 'EuRoC\nroom'}[tr], b, tr, cond(1.0, 0.5, b), 'held'))
     return cols
 def fig4(args):
     roots = {'grid': {'perfeat': 't4cal_perfeat_b1.50', 'pooled': 't4cal_pooled_b1.50', 'tuned': 't4tf_t3bgrid', 'stock': 't3b'},
@@ -276,9 +276,9 @@ def fig4(args):
                     sig = P[i, j] < 0.05
                     ax.text(j, i, f'{int(round(M[i, j]))}' + ('*' if sig else ''), ha='center', va='center', fontsize=6.5,
                             fontweight='bold' if sig else 'normal', color='white' if abs(M[i, j]) > 0.6 * lim else 'black')
-        ax.set_yticks(range(3)); ax.set_yticklabels(['vs per-frame pooled', 'vs tuned fixed R', 'vs stock fixed R'])
+        ax.set_yticks(range(3)); ax.set_yticklabels(['vs per-image', 'vs tuned fixed', 'vs stock fixed'])
         ax.set_xticks(range(len(cols))); ax.set_xticklabels([f'{b:g}' for _, b, *_ in cols]); ax.grid(False)
-        ax.set_xlabel('σ_bad (px)')
+        ax.set_xlabel('noise of the noisy features (px)')
         groups = []
         for j, (g, *_ ) in enumerate(cols):
             if not groups or groups[-1][0] != g: groups.append([g, j, j])
@@ -286,7 +286,7 @@ def fig4(args):
         for g, j0, j1 in groups:
             ax.text((j0 + j1) / 2, -0.6, g, ha='center', va='bottom', fontsize=6.5, linespacing=1.0)
             if j0 > 0: ax.axvline(j0 - 0.5, color='white', lw=2)
-        cb = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.01); cb.set_label('Δ ATE (%)', fontsize=7); cb.ax.tick_params(labelsize=7)
+        cb = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.01); cb.set_label('Δ error (%)', fontsize=7); cb.ax.tick_params(labelsize=7)
         nsig_b = int(np.nansum((M < 0) & (P < 0.05))); nsig_w = int(np.nansum((M > 0) & (P < 0.05))); ntot = int(np.isfinite(M).sum())
         save(fig, f'fig4_regime_map_{kn}',
              f'Paired relative difference in {"position" if k == 0 else "orientation"} ATE, per-feature minus baseline, as % of the '
@@ -301,7 +301,7 @@ def _bars(ax, groups, data, keys, ylabel):
         ci = [tci([v[0] for v in data[g][m].values()])[1] if len(data[g][m]) > 1 else 0 for g in groups]
         ax.bar(np.arange(len(groups)) + (i - (len(keys) - 1) / 2) * w, mu, w, yerr=ci, color=C[m], capsize=1.5,
                error_kw={'lw': 0.7}, label=LBL[m])
-    ax.set_xticks(range(len(groups))); ax.set_xticklabels([f'{g:g}' for g in groups]); ax.set_xlabel('σ_bad (px)')
+    ax.set_xticks(range(len(groups))); ax.set_xticklabels([f'{g:g}' for g in groups]); ax.set_xlabel('noise of the noisy features (px)')
     ax.set_ylabel(ylabel); ax.grid(axis='x', visible=False)
 def fig5(args):
     roots = {'stock': 't4val_fixed', 'tuned': 't4tf_val', 'pooled': 't4val_pooled_b1.50', 'perfeat': 't4val_perfeat_b1.50'}
@@ -309,7 +309,7 @@ def fig5(args):
     fig, ax = plt.subplots(1, 3, figsize=(7.2, 2.5)); nums = []
     for j, tr in enumerate(HELD):
         data = {b: {m: collect(roots[m], tr, cond(1.0, 0.5, b))[0] for m in keys} for b in SB}
-        _bars(ax[j], SB, data, keys, 'position ATE (m)' if j == 0 else ''); ax[j].set_title(TNAME[tr])
+        _bars(ax[j], SB, data, keys, 'position error (m)' if j == 0 else ''); ax[j].set_title(TNAME[tr])
         nums += [f'{TNAME[tr]} σ_bad {b}: ' + ', '.join(f'{m} {tci([v[0] for v in data[b][m].values()])[0]:.4f}' for m in keys) for b in SB]
     ax[0].legend(frameon=False, fontsize=7, loc='upper left')
     save(fig, 'fig5_heldout_bars_pos',
@@ -321,7 +321,7 @@ def fig6(args):
     fig, ax = plt.subplots(1, 4, figsize=(7.2, 2.5)); nums = []
     for j, (n, f) in enumerate([('', 0.25), ('', 0.5), ('60', 0.25), ('60', 0.5)]):
         data = {b: {m: collect(roots[m], 'udel_gore', cond(1.0, f, b, n))[0] for m in keys} for b in SB}
-        _bars(ax[j], SB, data, keys, 'position ATE (m)' if j == 0 else ''); ax[j].set_title(f'{n or 250} pts, f = {f:g}')
+        _bars(ax[j], SB, data, keys, 'position error (m)' if j == 0 else ''); ax[j].set_title(f'{n or 250} features, {f*100:g}% noisy')
         nums += [f'{n or 250} pts f {f} σ_bad {b}: ' + ', '.join(f'{m} {tci([v[0] for v in data[b][m].values()])[0]:.4f}' for m in keys) for b in SB]
     ax[0].legend(frameon=False, fontsize=6.5, loc='upper left')
     save(fig, 'fig6_grid_bars_pos',
@@ -350,7 +350,7 @@ def fig7(args):
             nums.append(f'σ {sig:g} {"pos" if k == 0 else "ori"}: ' + ', '.join(f'β {x:g}: {m:.3f}±{c:.3f}' for x, m, c in zip(xs, mu, ci)))
     for k, t in ((0, '(a) position'), (1, '(b) orientation')):
         ax[k].axhline(1, color='0.5', lw=0.8, ls='--'); ax[k].set_xlabel('noise inflation factor β'); ax[k].set_title(t)
-    ax[0].set_ylabel('ATE / ATE at β = 1.5'); ax[0].legend(frameon=False)
+    ax[0].set_ylabel('error / error at β = 1.5'); ax[0].legend(frameon=False)
     save(fig, 'fig7_beta_curves',
          'Effect of inflating every σ by β, uniform noise, udel_gore, 250 points: per-seed ATE ratio to β = 1.5 (mean and 95% '
          't-interval, 30 paired seeds). Some inflation clearly helps at both noise levels; position is flat between about 1.15 '
@@ -372,7 +372,7 @@ def fig8(args):
                 ax[j].fill_between(xs, lo, hi, color=C[m], alpha=0.18, lw=0)
                 nums.append(f'{TNAME[tr]} {m}: ' + ', '.join(f'σ {x:g}: {y:.3f}' for x, y in zip(xs, med)))
         ax[j].set_title(TNAME[tr]); ax[j].set_xlabel('true pixel noise σ (px)'); ax[j].set_yscale('log')
-    ax[0].set_ylabel('position ATE (m), runs not diverged'); ax[0].legend(frameon=False, fontsize=6.5)
+    ax[0].set_ylabel('position error (m), runs not diverged'); ax[0].legend(frameon=False, fontsize=6.5)
     save(fig, 'fig8_uniform_accuracy',
          'Accuracy under uniform noise: median and interquartile range of position ATE over the runs that did not diverge '
          '(points shown only where at least 10 of 30 survived). The per-feature filter degrades smoothly with σ; the fixed '
