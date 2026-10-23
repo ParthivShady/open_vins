@@ -2,7 +2,12 @@
 """NavCore T.4d real data: trajectory error of OpenVINS runs on EuRoC, and the summary across runs.
 Usage:  t4d_euroc_eval.py run <run_dir> <groundtruth.csv>     one run: writes <run_dir>/ate.txt
         t4d_euroc_eval.py summary [seq ...]                   all runs under results/t4d_euroc (default: every sequence)
+        t4d_euroc_eval.py pick <seq> <fixed|g1c|pfr>               the calibration choice (rule below), printed as a config name
         t4d_euroc_eval.py selftest
+Run 0 of every configuration is a logged check run and is left out of all statistics (logging can slow real-time runs).
+Calibration rule (fixed 18 Oct before any calibration run): the configuration with the lowest median position error
+over runs 1-N wins; if others are within 2% of it, prefer for fixed noise the value closest to 1.0 px (the OpenVINS
+default) and for G1c the smallest multiplier (the smallest change from fixed noise).
 Error: absolute trajectory error after the standard 4-DOF alignment for VIO (yaw and translation), position RMSE in m
 and orientation RMSE in degrees. Estimate: OpenVINS state file (t, JPL q_GtoI x y z w, p_IinG; the JPL q_GtoI numbers
 read as a Hamilton quaternion give R_ItoG). Ground truth: EuRoC csv (ns, p, q w x y z; body = IMU).
@@ -12,9 +17,9 @@ above the configured 1 px."""
 import csv, glob, gzip, math, os, sys
 import numpy as np
 from scipy.spatial.transform import Rotation
-from scipy.stats import mannwhitneyu
+from scipy.stats import mannwhitneyu, wilcoxon
 
-RES = os.path.expanduser(os.environ.get('T4D_RES', '~/navcore_ws/results')) + '/t4d_euroc'
+RES = os.environ.get('T4D_EUROC_RES') or os.path.expanduser(os.environ.get('T4D_RES', '~/navcore_ws/results')) + '/t4d_euroc'
 
 
 def load_est(p):
@@ -69,37 +74,83 @@ def raised_share(d):
         return math.nan
     rows = [r.split(',') for r in txt.splitlines()[1:] if r.count(',') >= 8]
     su = np.array([float(r[4]) for r in rows])
-    return float(np.mean(su > 1.0 * (1 + 1e-6))) if len(su) else math.nan
+    return float(np.mean(su > su.min() * (1 + 1e-6))) if len(su) else math.nan
+
+
+def runs(seq, cfg):
+    vals = []
+    for d in sorted(glob.glob(f'{RES}/{seq}/{cfg}/run*')):
+        if os.path.basename(d) == 'run0':
+            continue
+        t = read(os.path.join(d, 'ate.txt'))
+        if t:
+            vals.append([float(x) for x in t.split()[:2]])
+    return np.array(vals).reshape(-1, 2)
+
+
+def runs_by(seq, cfg):
+    """{run number: position error} for runs 1..N (Monte Carlo runs are paired across settings by run number = seed)"""
+    out = {}
+    for d in glob.glob(f'{RES}/{seq}/{cfg}/run*'):
+        r = os.path.basename(d)[3:]
+        t = read(os.path.join(d, 'ate.txt'))
+        if r.isdigit() and int(r) > 0 and t:
+            out[int(r)] = float(t.split()[0])
+    return out
+
+
+def configs(seq):
+    return sorted(os.path.basename(p) for p in glob.glob(f'{RES}/{seq}/*') if os.path.isdir(p))
 
 
 def summary(seqs):
     seqs = seqs or sorted(os.path.basename(p) for p in glob.glob(RES + '/*') if os.path.isdir(p))
     for seq in seqs:
-        print(f'== {seq}')
-        res = {}
-        for cfg in ('stock', 'fixed15', 'g1c'):
-            vals = []
-            for d in sorted(glob.glob(f'{RES}/{seq}/{cfg}/run*')):
-                t = read(os.path.join(d, 'ate.txt'))
-                if t:
-                    vals.append([float(x) for x in t.split()[:2]])
-            res[cfg] = np.array(vals).reshape(-1, 2)
-            v = res[cfg]
+        print(f'== {seq}   (runs 1-N; run 0 is the logged check run)')
+        res = {c: runs(seq, c) for c in configs(seq)}
+        for c, v in res.items():
             if len(v):
                 q = np.percentile(v[:, 0], [25, 50, 75])
-                print(f'   {cfg:8s} {len(v):2d} runs | position median {q[1]:.4f} m (IQR {q[0]:.4f}-{q[2]:.4f}) | '
+                print(f'   {c:16s} {len(v):2d} runs | position median {q[1]:.4f} m (IQR {q[0]:.4f}-{q[2]:.4f}) | '
                       f'orientation median {np.median(v[:, 1]):.3f} deg')
-        g = res.get('g1c', np.zeros((0, 2)))
-        for base in ('stock', 'fixed15'):
-            b = res.get(base, np.zeros((0, 2)))
-            if len(g) >= 3 and len(b) >= 3:
-                rel = np.median(g[:, 0]) / np.median(b[:, 0]) - 1
-                p = mannwhitneyu(g[:, 0], b[:, 0]).pvalue
-                print(f'   G1c against {base:8s}: median position {100 * rel:+.1f}% (Mann-Whitney p {p:.2g})')
-        sh = [raised_share(d) for d in sorted(glob.glob(f'{RES}/{seq}/g1c/run*'))]
-        sh = [x for x in sh if np.isfinite(x)]
-        if sh:
-            print(f'   G1c: share of MSCKF feature rows raised above 1 px: {100 * np.mean(sh):.1f}% (runs {min(sh) * 100:.1f}-{max(sh) * 100:.1f}%)')
+        pairs = [(g, b) for g in res if g.startswith('g1c') for b in res if b.startswith('fixed') or b == 'stock']
+        pairs += [(g, b) for g in res if g.startswith('g1c') for b in res if b.startswith('pfr')]
+        pairs += [(g, b) for g in res if g.startswith('pfr') for b in res if b.startswith('fixed') or b == 'stock']
+        for g, b in pairs:
+            pg, pb = runs_by(seq, g), runs_by(seq, b)
+            common = sorted(set(pg) & set(pb))
+            if len(common) >= 5:
+                a, c = np.array([pg[k] for k in common]), np.array([pb[k] for k in common])
+                rel = np.median(a) / np.median(c) - 1
+                pw = wilcoxon(a, c).pvalue if np.any(a != c) else 1.0
+                print(f'   {g} against {b}: median position {100 * rel:+.1f}%{"*" if pw < 0.05 else " "} '
+                      f'(paired by seed, Wilcoxon p {pw:.2g}, lower in {int((a < c).sum())}/{len(common)})')
+            elif len(res[g]) >= 3 and len(res[b]) >= 3:
+                rel = np.median(res[g][:, 0]) / np.median(res[b][:, 0]) - 1
+                p = mannwhitneyu(res[g][:, 0], res[b][:, 0]).pvalue
+                print(f'   {g} against {b}: median position {100 * rel:+.1f}% (Mann-Whitney p {p:.2g})')
+            elif len(res[g]) >= 1 and len(res[b]) >= 1:
+                rel = np.median(res[g][:, 0]) / np.median(res[b][:, 0]) - 1
+                print(f'   {g} against {b}: position {100 * rel:+.1f}% (single deterministic runs)')
+        for g in [c for c in res if c.startswith('g1c') or c.startswith('pfr')]:
+            sh = [raised_share(d) for d in sorted(glob.glob(f'{RES}/{seq}/{g}/run*'))]
+            sh = [x for x in sh if np.isfinite(x)]
+            if sh:
+                print(f'   {g}: share of MSCKF feature rows raised above its floor: {100 * np.mean(sh):.1f}% (logged runs)')
+
+
+def pick(seq, kind):
+    meds = {c: float(np.median(v[:, 0])) for c in configs(seq) if c.startswith(kind) for v in [runs(seq, c)] if len(v) >= 1}
+    if not meds:
+        sys.exit(f'no {kind} configurations with runs for {seq}')
+    best = min(meds, key=meds.get)
+    near = [c for c in meds if meds[c] <= 1.02 * meds[best]]
+    if kind == 'fixed':
+        choice = min(near, key=lambda c: (abs(float(c[5:]) - 1.0), meds[c]))
+    else:
+        choice = min(near, key=lambda c: (float(c.split('_b')[1].split('_')[0]), meds[c]))
+    print(choice)
+    print('   ' + ', '.join(f'{c} {m:.4f}' for c, m in sorted(meds.items())) + f'  -> {choice}', file=sys.stderr)
 
 
 def selftest():
@@ -122,6 +173,8 @@ def selftest():
 if __name__ == '__main__':
     if len(sys.argv) >= 2 and sys.argv[1] == 'run' and len(sys.argv) == 4:
         run(sys.argv[2], sys.argv[3])
+    elif len(sys.argv) == 4 and sys.argv[1] == 'pick':
+        pick(sys.argv[2], sys.argv[3])
     elif len(sys.argv) >= 2 and sys.argv[1] == 'summary':
         summary(sys.argv[2:])
     elif len(sys.argv) == 2 and sys.argv[1] == 'selftest':

@@ -13,6 +13,7 @@ find_package(cv_bridge REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(ov_core REQUIRED)
 find_package(ov_init REQUIRED)
+find_package(rosbag2_cpp REQUIRED) # NavCore: serial runner
 
 # Describe ROS project
 option(ENABLE_ROS "Enable or disable building with ROS (if it is found)" ON)
@@ -92,6 +93,12 @@ add_executable(run_subscribe_msckf src/run_subscribe_msckf.cpp)
 ament_target_dependencies(run_subscribe_msckf ${ament_libraries})
 target_link_libraries(run_subscribe_msckf ov_msckf_lib ${thirdparty_libraries})
 install(TARGETS run_subscribe_msckf DESTINATION lib/${PROJECT_NAME})
+
+# NavCore: deterministic serial runner for ROS 2 bags (reads the bag directly, frames in recorded order)
+add_executable(ros2_serial_msckf src/ros2_serial_msckf.cpp)
+ament_target_dependencies(ros2_serial_msckf ${ament_libraries} rosbag2_cpp)
+target_link_libraries(ros2_serial_msckf ov_msckf_lib ${thirdparty_libraries})
+install(TARGETS ros2_serial_msckf DESTINATION lib/${PROJECT_NAME})
 
 add_executable(run_simulation src/run_simulation.cpp)
 ament_target_dependencies(run_simulation ${ament_libraries})

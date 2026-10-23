@@ -167,6 +167,8 @@ public:
     if (!(g1b_level > 0.0))
       return nominal_sq;
     const double base = std::max(nominal_sq, scale * scale * g1b_level);
+    if (g1c_perframe) // per-frame version: frame level only, no per-feature excess
+      return base;
     auto it = epi_acc.find(featid);
     if (it == epi_acc.end() || it->second.second < g1b_min_test)
       return base;
@@ -202,6 +204,10 @@ private:
       oracle_logsd = std::atof(v);
     if (const char *v = std::getenv("NAVCORE_NOISE_SEED"))
       noise_seed = std::strtoull(v, nullptr, 10);
+    if (const char *v = std::getenv("NAVCORE_G1C_PERFRAME"))
+      g1c_perframe = (v[0] == '1');
+    if (mode == 5 && g1c_perframe)
+      std::fprintf(stderr, "[NavCore] G1c per-frame: one value per frame, no per-feature excess\n");
     if (mode == 3 || oracle_logsd > 0.0)
       std::fprintf(stderr, "[NavCore] G1: epi nu0 %.2f, oracle logsd %.3f, noise seed %llu\n", epi_nu0, oracle_logsd, noise_seed);
     if (mode == 5)
@@ -212,6 +218,7 @@ private:
                    g1b_min_test, g1b_min_level, noise_seed);
   }
   bool warned = false;
+  bool g1c_perframe = false; ///< NAVCORE_G1C_PERFRAME=1: G1c with one value per frame
   std::unordered_map<size_t, std::pair<double, double>> epi_acc; ///< T.4d G1: featid -> (sum of d^2, count)
   double epi_fsum = 0.0;
   int epi_fn = 0;

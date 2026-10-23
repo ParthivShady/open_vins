@@ -20,6 +20,8 @@
  */
 
 #include "Simulator.h"
+#include <cstdio>
+#include <cstdlib>
 
 #include "cam/CamBase.h"
 #include "cam/CamEqui.h"
@@ -137,6 +139,16 @@ Simulator::Simulator(VioManagerOptions &params_) {
   for (int i = 0; i < params.state_options.num_cameras; i++) {
     gen_meas_cams.push_back(std::mt19937(params.sim_seed_measurements));
     gen_meas_cams.at(i).seed(params.sim_seed_measurements);
+    // NavCore T.4e: NAVCORE_SIM_INDEP_CAMS=1 gives each camera its own noise stream. OpenVINS seeds all cameras
+    // alike, so features at the same list position get identical noise in both images. Unset: unchanged.
+    if (i > 0) {
+      const char *navcore_ic = std::getenv("NAVCORE_SIM_INDEP_CAMS");
+      if (navcore_ic != nullptr && navcore_ic[0] == '1') {
+        gen_meas_cams.at(i).seed(params.sim_seed_measurements + 1000003u * (unsigned)i);
+        if (i == 1)
+          std::fprintf(stderr, "[NavCore] sim: independent noise per camera\n");
+      }
+    }
   }
 
   //===============================================================

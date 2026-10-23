@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """NavCore T.4d G1: verify one run from its own records (run.log [NavCore] lines and the per-feature gate logs).
-Usage: verify_t4d_run.py <run_dir> <mode> <beta> <nu0> <logsd> <seed> [tuned]
+Usage: verify_t4d_run.py <run_dir> <mode> <beta> <nu0> <logsd> <seed> [tuned] [indep]
+("indep": the run must show the simulator switch that gives each camera its own noise stream.)
 ("tuned": the tuned-fixed override, configured sigma 1.5; mode 0 = tuned fixed, mode 5 = G1c with that floor.)
 Prints 'OK ...' and exits 0 if the run used the intended settings, otherwise prints 'FAIL ...' and exits 1.
 Checks: the plain [NavCore] lines (mode, beta, nu0, log-spread, seed, simulator noise); a complete state file;
@@ -46,6 +47,10 @@ def check_rows(G, mode, beta, logsd, name, tuned=False):
         want = 1.5 if tuned else su[0]
         bad = np.abs(su - want) > 1e-6 * want
         return (f'{name}: fixed run but sigma_used is not {want:g} everywhere' if bad.any() else None), f'{name} sigma_used {su[0]:g}'
+    if mode == 2:   # per-frame: one value for every feature in an update, of a sensible size
+        msg = f'{name} per-frame, median sigma_used/(beta sigma_true) {np.median(su / (beta * st)):.2f}'
+        q = su / (beta * st)
+        return (f'{name}: per-frame sigma has the wrong size: ' + msg if not 0.3 <= np.median(q) <= 3 else None), msg
     if mode == 1 and logsd == 0:
         err = np.max(np.abs(su / (beta * st) - 1))
         return (f'{name}: sigma_used != beta*sigma_true (max rel err {err:.2e})' if err > 1e-4 else None), f'{name} exact'
@@ -81,10 +86,11 @@ def check_rows(G, mode, beta, logsd, name, tuned=False):
 
 
 def main():
-    if len(sys.argv) not in (7, 8) or (len(sys.argv) == 8 and sys.argv[7] != 'tuned'):
+    flags = sys.argv[7:]
+    if len(sys.argv) < 7 or any(f not in ('tuned', 'indep') for f in flags):
         sys.exit(__doc__)
     d, mode, beta, nu0, logsd, seed = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5]), int(sys.argv[6])
-    tuned = len(sys.argv) == 8
+    tuned, indep = 'tuned' in flags, 'indep' in flags
     if tuned and mode not in (0, 5):
         sys.exit('tuned runs must be mode 0 or 5')
     fail = []
@@ -93,6 +99,10 @@ def main():
         print(f'FAIL {d}: no run.log'); sys.exit(1)
     if '[NavCore] sim noise:' not in log:
         fail.append('no [NavCore] sim noise line')
+    if indep and '[NavCore] sim: independent noise per camera' not in log:
+        fail.append('independent camera noise was requested but the simulator line is missing')
+    if not indep and '[NavCore] sim: independent noise per camera' in log:
+        fail.append('independent camera noise was on but not requested')
     if tuned and '[NavCore-wrapper] filter sigma override 1.500' not in log:
         fail.append('tuned run without the override line (NAVCORE_FILTER_SIGMA=1.5 not passed)')
     if not tuned and '[NavCore-wrapper] filter sigma override' in log:
