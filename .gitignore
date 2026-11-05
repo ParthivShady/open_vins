@@ -9,3 +9,4 @@ doxgen_generated
 doc
 .vscode
 config/navcore_sim_t1/estimator_config.yaml.orig
+*.bak*
