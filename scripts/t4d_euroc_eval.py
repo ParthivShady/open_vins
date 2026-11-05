@@ -2,7 +2,7 @@
 """NavCore T.4d real data: trajectory error of OpenVINS runs on EuRoC, and the summary across runs.
 Usage:  t4d_euroc_eval.py run <run_dir> <groundtruth.csv>     one run: writes <run_dir>/ate.txt
         t4d_euroc_eval.py summary [seq ...]                   all runs under results/t4d_euroc (default: every sequence)
-        t4d_euroc_eval.py pick <seq> <fixed|g1c|pfr>               the calibration choice (rule below), printed as a config name
+        t4d_euroc_eval.py pick <seq> <fixed|g1c|pfr|gate>               the calibration choice (rule below), printed as a config name
         t4d_euroc_eval.py selftest
 Run 0 of every configuration is a logged check run and is left out of all statistics (logging can slow real-time runs).
 Calibration rule (fixed 18 Oct before any calibration run): the configuration with the lowest median position error
@@ -113,9 +113,11 @@ def summary(seqs):
                 q = np.percentile(v[:, 0], [25, 50, 75])
                 print(f'   {c:16s} {len(v):2d} runs | position median {q[1]:.4f} m (IQR {q[0]:.4f}-{q[2]:.4f}) | '
                       f'orientation median {np.median(v[:, 1]):.3f} deg')
-        pairs = [(g, b) for g in res if g.startswith('g1c') for b in res if b.startswith('fixed') or b == 'stock']
+        fixedlike = [b for b in res if b.startswith('fixed') or b.startswith('gate') or b == 'stock']
+        pairs = [(g, b) for g in res if g.startswith('g1c') for b in fixedlike]
         pairs += [(g, b) for g in res if g.startswith('g1c') for b in res if b.startswith('pfr')]
-        pairs += [(g, b) for g in res if g.startswith('pfr') for b in res if b.startswith('fixed') or b == 'stock']
+        pairs += [(g, b) for g in res if g.startswith('pfr') for b in fixedlike]
+        pairs += [(g, b) for g in res if g.startswith('g1t') for b in fixedlike + [c for c in res if c.startswith('g1c') or c.startswith('pfr')]]
         for g, b in pairs:
             pg, pb = runs_by(seq, g), runs_by(seq, b)
             common = sorted(set(pg) & set(pb))
@@ -132,7 +134,7 @@ def summary(seqs):
             elif len(res[g]) >= 1 and len(res[b]) >= 1:
                 rel = np.median(res[g][:, 0]) / np.median(res[b][:, 0]) - 1
                 print(f'   {g} against {b}: position {100 * rel:+.1f}% (single deterministic runs)')
-        for g in [c for c in res if c.startswith('g1c') or c.startswith('pfr')]:
+        for g in [c for c in res if c.startswith('g1c') or c.startswith('pfr') or c.startswith('g1t')]:
             sh = [raised_share(d) for d in sorted(glob.glob(f'{RES}/{seq}/{g}/run*'))]
             sh = [x for x in sh if np.isfinite(x)]
             if sh:
@@ -147,6 +149,8 @@ def pick(seq, kind):
     near = [c for c in meds if meds[c] <= 1.02 * meds[best]]
     if kind == 'fixed':
         choice = min(near, key=lambda c: (abs(float(c[5:]) - 1.0), meds[c]))
+    elif kind == 'gate':   # smallest widening of the gate within 2% of the best
+        choice = min(near, key=lambda c: (int(c[4:].split('_')[0]), meds[c]))
     else:
         choice = min(near, key=lambda c: (float(c.split('_b')[1].split('_')[0]), meds[c]))
     print(choice)

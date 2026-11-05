@@ -13,9 +13,10 @@
 #   config: fixed<sigma> (e.g. fixed1.00) | g1c_b<beta>_f<sigma> (e.g. g1c_b1.0_f1.00)
 #   Each configuration gets a logged check run 0 (gate logs; verifies the settings; left out of the statistics) and
 #   unlogged runs 1..N. Serial: run 1 must match run 0 byte for byte (same seed; determinism check), or the batch stops.
-#   bag: ~/euroc_data/<seq>_ros2      ground truth: ov_data/euroc_mav/<seq>.csv
-#   start offset (serial runs): OpenVINS's own EuRoC script values for the hand-carried machine hall starts, MH_04 10 s and
-#   MH_05 5 s; 0 s otherwise (MH_01 stays at 0 s, as calibrated). BAG_START=<s> overrides.
+#   bag: ~/euroc_data/<seq>_ros2      ground truth: ov_data/euroc_mav/<seq>.csv (EuRoC) or results/gt_tumvi/<seq>.csv
+#   (TUM-VI, sequence names dataset-room<i>_512_16, run with OpenVINS's config/tum_vi)
+#   start offset (serial runs): OpenVINS's own EuRoC script values for the hand-carried machine hall starts, MH_02 35 s,
+#   MH_03 5 s, MH_04 10 s, MH_05 5 s; 0 s otherwise (MH_01 stays at 0 s, as calibrated). BAG_START=<s> overrides.
 set -u
 WS=$HOME/navcore_ws; OV=$WS/src/open_vins; S=$OV/scripts
 # Serial runs are Monte Carlo runs with seeded IMU dither (seed = run number; run 0 repeats seed 1 with logging, so the
@@ -30,29 +31,37 @@ CONFIG=$OV/config/euroc_mav/estimator_config.yaml
 
 one() {
   local seq=$1 cfg=$2 rep=$3 rate=${4:-1.0}
-  local bag=$HOME/euroc_data/${seq}_ros2 gt=$OV/ov_data/euroc_mav/${seq}.csv out=$RES/$seq/$cfg/run$rep
+  local bag=$HOME/euroc_data/${seq}_ros2 gt=$OV/ov_data/euroc_mav/${seq}.csv out=$RES/$seq/$cfg/run$rep config=$CONFIG
+  case $seq in   # TUM-VI (dataset-room*): OpenVINS's own TUM-VI config; ground truth extracted by tumvi_gt.py
+    dataset-*) config=$OV/config/tum_vi/estimator_config.yaml; gt=$WS/results/gt_tumvi/${seq}.csv ;;
+  esac
   [ -f "$bag/metadata.yaml" ] || { echo "ERROR: no ROS2 bag at $bag"; return 1; }
   [ -f "$gt" ] || { echo "ERROR: no ground truth at $gt"; return 1; }
   if [ "${REALTIME:-0}" = 1 ] && pgrep -f "run_subscribe_msckf|run_simulation|run_t4d_g1|run_t4e" > /dev/null; then
     echo "ERROR: another OpenVINS process or batch is running; real-time runs need the machine to themselves"; return 1
   fi
-  local sig beta="" pf=0 envv=(env -u NAVCORE_R_MODE -u NAVCORE_FILTER_SIGMA -u NAVCORE_ORACLE_SCALE -u NAVCORE_EPI_NU0 -u NAVCORE_ORACLE_LOGSD -u NAVCORE_GATE_LOG -u NAVCORE_G1C_PERFRAME)
+  local sig beta="" pf=0 tr=0 gm="" xp=() envv=(env -u NAVCORE_R_MODE -u NAVCORE_FILTER_SIGMA -u NAVCORE_ORACLE_SCALE -u NAVCORE_EPI_NU0 -u NAVCORE_ORACLE_LOGSD -u NAVCORE_GATE_LOG -u NAVCORE_G1C_PERFRAME -u NAVCORE_G1C_INNOV)
   case $cfg in
     fixed*) sig=${cfg#fixed} ;;
     g1c_b*_f*) beta=${cfg#g1c_b}; beta=${beta%%_f*}; sig=${cfg##*_f}
                envv+=(NAVCORE_R_MODE=5 NAVCORE_ORACLE_SCALE=$beta NAVCORE_NOISE_SEED=$rep) ;;
     pfr_b*_f*) beta=${cfg#pfr_b}; beta=${beta%%_f*}; sig=${cfg##*_f}; pf=1   # G1c's per-frame version
                envv+=(NAVCORE_R_MODE=5 NAVCORE_ORACLE_SCALE=$beta NAVCORE_NOISE_SEED=$rep NAVCORE_G1C_PERFRAME=1) ;;
-    *) echo "unknown configuration $cfg (use fixed<sigma>, g1c_b<beta>_f<sigma> or pfr_b<beta>_f<sigma>)"; return 1 ;;
+    g1t_b*_f*) beta=${cfg#g1t_b}; beta=${beta%%_f*}; sig=${cfg##*_f}; tr=1   # improved version: trust factor on the boost
+               envv+=(NAVCORE_R_MODE=5 NAVCORE_ORACLE_SCALE=$beta NAVCORE_NOISE_SEED=$rep NAVCORE_G1C_INNOV=1) ;;
+    gate*_f*) gm=${cfg#gate}; gm=${gm%%_f*}; sig=${cfg##*_f}   # fixed noise with the chi-square gate widened gm times
+               case $gm in ''|*[!0-9]*) echo "gate multiplier must be a whole number: $cfg"; return 1 ;; esac
+               xp=(-p up_msckf_chi2_multipler:=$gm.0 -p up_slam_chi2_multipler:=$gm.0) ;;   # as decimals: OpenVINS reads a double
+    *) echo "unknown configuration $cfg (use fixed<sigma>, g1c_b<beta>_f<sigma>, pfr_b<beta>_f<sigma> or gate<m>_f<sigma>)"; return 1 ;;
   esac
   sig=$(printf "%.3f" "$sig")   # ROS 2 needs a decimal point for doubles
   rm -rf "$out"; mkdir -p "$out"
   [ "$rep" = 0 ] && envv+=(NAVCORE_GATE_LOG=$out/gate.csv)
   set +u; source $WS/install/setup.bash; set -u   # ROS setup scripts are not set -u safe
   if [ "${REALTIME:-0}" = 1 ]; then
-    "${envv[@]}" ros2 run ov_msckf run_subscribe_msckf "$CONFIG" --ros-args \
+    "${envv[@]}" ros2 run ov_msckf run_subscribe_msckf "$config" --ros-args \
       -p save_total_state:=true -p filepath_est:=$out/state_estimate.txt -p filepath_std:=$out/state_deviation.txt \
-      -p filepath_gt:=$out/state_groundtruth.txt -p up_msckf_sigma_px:=$sig -p up_slam_sigma_px:=$sig > "$out/run.log" 2>&1 &
+      -p filepath_gt:=$out/state_groundtruth.txt -p up_msckf_sigma_px:=$sig -p up_slam_sigma_px:=$sig "${xp[@]}" > "$out/run.log" 2>&1 &
     sleep 6
     ros2 bag play "$bag" --rate "$rate" > "$out/bag.log" 2>&1
     sleep 5
@@ -64,13 +73,13 @@ one() {
   else
     # serial: reads the bag in recorded order; '|| true' because of the known harmless segfault at ROS 2 shutdown
     local start=${BAG_START:-}
-    if [ -z "$start" ]; then case $seq in MH_04_difficult) start=10.0 ;; MH_05_difficult) start=5.0 ;; *) start=0.0 ;; esac; fi
+    if [ -z "$start" ]; then case $seq in MH_02_easy) start=35.0 ;; MH_03_medium) start=5.0 ;; MH_04_difficult) start=10.0 ;; MH_05_difficult) start=5.0 ;; *) start=0.0 ;; esac; fi
     start=$(printf "%.2f" "$start")   # always a decimal, so ROS 2 reads it as a double
     local dseed=0
     if [ "${DITHER:-1}" = 1 ]; then dseed=$(( rep > 0 ? rep : 1 )); fi
-    "${envv[@]}" timeout -s INT -k 30 900 ros2 run ov_msckf ros2_serial_msckf "$CONFIG" --ros-args -p path_bag:=$bag -p navcore_dither_seed:=$dseed -p navcore_bag_start:=$start \
+    "${envv[@]}" timeout -s INT -k 30 900 ros2 run ov_msckf ros2_serial_msckf "$config" --ros-args -p path_bag:=$bag -p navcore_dither_seed:=$dseed -p navcore_bag_start:=$start \
       -p save_total_state:=true -p filepath_est:=$out/state_estimate.txt -p filepath_std:=$out/state_deviation.txt \
-      -p filepath_gt:=$out/state_groundtruth.txt -p up_msckf_sigma_px:=$sig -p up_slam_sigma_px:=$sig > "$out/run.log" 2>&1 || true
+      -p filepath_gt:=$out/state_groundtruth.txt -p up_msckf_sigma_px:=$sig -p up_slam_sigma_px:=$sig "${xp[@]}" > "$out/run.log" 2>&1 || true
     grep -q "\[NavCore\] serial: [0-9]* IMU messages" "$out/run.log" || { echo "FAIL $seq $cfg run$rep: the serial runner did not finish reading the bag (see $out/run.log)"; return 1; }
     if [ "$start" != 0.00 ] && ! grep -q "\[NavCore\] serial: skipping the first" "$out/run.log"; then
       echo "FAIL $seq $cfg run$rep: a start offset of $start s was requested but is not in the log"; return 1; fi
@@ -85,12 +94,29 @@ one() {
   fi
   if [ "$pf" = 1 ] && ! grep -q "\[NavCore\] G1c per-frame" "$out/run.log"; then echo "FAIL $seq $cfg run$rep: per-frame switch not on"; return 1; fi
   if [ "$pf" = 0 ] && grep -q "\[NavCore\] G1c per-frame" "$out/run.log"; then echo "FAIL $seq $cfg run$rep: per-frame switch on unexpectedly"; return 1; fi
+  if [ "$tr" = 1 ] && ! grep -q "\[NavCore\] G1c trust:" "$out/run.log"; then echo "FAIL $seq $cfg run$rep: improved-version switch not on"; return 1; fi
+  if [ "$tr" = 0 ] && grep -q "\[NavCore\] G1c trust:" "$out/run.log"; then echo "FAIL $seq $cfg run$rep: improved-version switch on unexpectedly"; return 1; fi
   if [ "$rep" = 0 ]; then   # the check run: every row must sit at the configured noise (fixed) or at/above it (G1c)
+    [ -s "$out/gate_feat.csv" ] || { echo "FAIL $seq $cfg run0: no gate log, so the filter never made an update (start-up failed?)"; return 1; }
     local ok
     if [ -n "$beta" ]; then ok=$(awk -F, -v s="$sig" 'NR > 1 && $5 < s * 0.999999 {b = 1} END {print b ? 0 : 1}' "$out/gate_feat.csv")
     else ok=$(awk -F, -v s="$sig" 'NR > 1 && ($5 < s * 0.999999 || $5 > s * 1.000001) {b = 1} END {print b ? 0 : 1}' "$out/gate_feat.csv"); fi
     [ "$ok" = 1 ] || { echo "FAIL $seq $cfg run0: sigma_used does not match the configuration ($sig px)"; return 1; }
     [ "$(wc -l < "$out/gate_feat.csv")" -gt 100 ] || { echo "FAIL $seq $cfg run0: gate log nearly empty"; return 1; }
+    if [ -n "$gm" ]; then   # the widened gate must be in effect: accepted rows within gm x the 95% chi-square point
+      "$PY" - "$out/gate_feat.csv" "$gm" << 'PYEOF' || { echo "FAIL $seq $cfg run0: gate multiplier $gm not in effect"; return 1; }
+import csv, sys
+from scipy.stats import chi2
+m = float(sys.argv[2]); n = above = bad = 0
+for r in csv.DictReader(open(sys.argv[1])):
+    if r['kind'] != '0' or r['accepted'] != '1':
+        continue
+    c, t = float(r['chi2']), chi2.ppf(0.95, int(float(r['dof'])))
+    n += 1; above += c > t * 1.0001; bad += c > m * t * 1.0001
+print(f'gate check: {n} accepted MSCKF rows, {above} above the standard 95% point, {bad} above {m:g} times it')
+sys.exit(0 if n > 0 and bad == 0 and (m == 1 or above > 0) and (m != 1 or above == 0) else 1)
+PYEOF
+    fi
     if [ "$pf" = 1 ]; then   # per-frame: all MSCKF rows of one update share one value
       ok=$(awk -F, 'NR > 1 && $2 == 0 { if (!($1 in lo) || $5 < lo[$1]) lo[$1] = $5; if (!($1 in hi) || $5 > hi[$1]) hi[$1] = $5 }
                     END { b = 0; for (t in lo) if (hi[t] > lo[t] * 1.000001) b = 1; print b ? 0 : 1 }' "$out/gate_feat.csv")

@@ -144,6 +144,7 @@ public:
   // ---- T.4d G1c (mode 5) ----
   /// L from per-feature means each divided by its own chi2(m)/m quantile: exact for any mix of track lengths
   void g1c_update_level() {
+    g1c_fold(); // improved version: last frame's residual feedback moves the trust factor (no-op when off)
     std::vector<double> z;
     for (size_t id : epi_frame_ids) {
       auto it = epi_acc.find(id);
@@ -162,6 +163,34 @@ public:
       g1b_level = d[d.size() / 2] / 0.4549364;
     }
   }
+  // ---- improved version (NAVCORE_G1C_INNOV=1): trust factor on the per-feature boost ----
+  /// The boost the stereo check proposes for this feature (px^2, includes beta); 0 if not clearly noisier
+  double g1c_boost(size_t featid) const {
+    if (!(g1b_level > 0.0) || g1c_perframe)
+      return 0.0;
+    auto it = epi_acc.find(featid);
+    if (it == epi_acc.end() || it->second.second < g1b_min_test)
+      return 0.0;
+    const double S = it->second.first, m = it->second.second;
+    if (S / g1b_level > chi2_point(m, g1b_z))
+      return scale * scale * std::max(0.0, S / m - g1b_level);
+    return 0.0;
+  }
+  /// Every MSCKF feature after its chi-square test: residual energy per dimension, (chi2/dof) x its variance,
+  /// collected separately for flagged features (with their proposed boost) and the others
+  void g1c_feedback(size_t featid, int dof, double chi2, double nominal_sq) {
+    if (mode != 5 || !g1c_innov || g1c_perframe || dof <= 0 || !std::isfinite(chi2))
+      return;
+    const double e2 = std::min(chi2 / dof, 50.0) * g1c_sigma_sq(featid, nominal_sq);
+    const double b = g1c_boost(featid);
+    if (b > 0.0) {
+      fb_flag_e2.push_back(e2);
+      fb_flag_boost.push_back(b);
+    } else {
+      fb_rest_e2.push_back(e2);
+    }
+  }
+  double g1c_trust = 1.0; ///< trust factor in [0, 1] on the per-feature boost (improved version)
   /// max(configured, beta^2 L), plus beta^2 (S/m - L) for a feature clearly noisier than L. Includes beta.
   double g1c_sigma_sq(size_t featid, double nominal_sq) const {
     if (!(g1b_level > 0.0))
@@ -174,7 +203,7 @@ public:
       return base;
     const double S = it->second.first, m = it->second.second;
     if (S / g1b_level > chi2_point(m, g1b_z))
-      return base + scale * scale * std::max(0.0, S / m - g1b_level);
+      return base + (g1c_innov ? g1c_trust : 1.0) * scale * scale * std::max(0.0, S / m - g1b_level);
     return base;
   }
   /// L, or the feature's own mean if S/L exceeds the 99% point of chi2(m)
@@ -208,6 +237,11 @@ private:
       g1c_perframe = (v[0] == '1');
     if (mode == 5 && g1c_perframe)
       std::fprintf(stderr, "[NavCore] G1c per-frame: one value per frame, no per-feature excess\n");
+    if (const char *v = std::getenv("NAVCORE_G1C_INNOV"))
+      g1c_innov = (v[0] == '1');
+    if (mode == 5 && g1c_innov && !g1c_perframe)
+      std::fprintf(stderr, "[NavCore] G1c trust: boost scaled by the filter residuals (start %.2f, rate %.2f, pooled 20/20, cap 50)\n",
+                   g1c_trust, g1c_trust_rate);
     if (mode == 3 || oracle_logsd > 0.0)
       std::fprintf(stderr, "[NavCore] G1: epi nu0 %.2f, oracle logsd %.3f, noise seed %llu\n", epi_nu0, oracle_logsd, noise_seed);
     if (mode == 5)
@@ -219,6 +253,36 @@ private:
   }
   bool warned = false;
   bool g1c_perframe = false; ///< NAVCORE_G1C_PERFRAME=1: G1c with one value per frame
+  bool g1c_innov = false;     ///< NAVCORE_G1C_INNOV=1: improved version (trust factor on the boost)
+  double g1c_trust_rate = 0.1; ///< fraction of the way the trust factor moves per frame (fixed by design)
+  int fb_n = 0;                ///< pooled updates that moved the trust factor
+  std::vector<double> fb_flag_e2, fb_flag_boost, fb_rest_e2;
+  void g1c_fold() {
+    // pooled across frames: an MSCKF update holds only a few features, so wait until both groups have 20
+    auto window = [](std::vector<double> &v) {
+      if (v.size() > 400)
+        v.erase(v.begin(), v.end() - 400);
+    };
+    window(fb_flag_e2);
+    window(fb_flag_boost);
+    window(fb_rest_e2);
+    if (fb_flag_e2.size() >= 20 && fb_rest_e2.size() >= 20) {
+      auto median = [](std::vector<double> v) {
+        std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+        return v[v.size() / 2];
+      };
+      const double boost = median(fb_flag_boost);
+      if (boost > 0.0) {
+        const double r = std::min(1.0, std::max(0.0, (median(fb_flag_e2) - median(fb_rest_e2)) / boost));
+        g1c_trust += g1c_trust_rate * (r - g1c_trust);
+        if (++fb_n % 25 == 0)
+          std::fprintf(stderr, "[NavCore] G1c trust %.3f after %d updates\n", g1c_trust, fb_n);
+      }
+      fb_flag_e2.clear();
+      fb_flag_boost.clear();
+      fb_rest_e2.clear();
+    }
+  }
   std::unordered_map<size_t, std::pair<double, double>> epi_acc; ///< T.4d G1: featid -> (sum of d^2, count)
   double epi_fsum = 0.0;
   int epi_fn = 0;
@@ -263,6 +327,8 @@ public:
   }
   bool active() const { return log != nullptr; }
   void row(double t, int kind, size_t featid, double nominal_sq, int dof, double chi2, double threshold, bool accepted) {
+    if (kind == 0) // improved version: residual feedback for every MSCKF feature, logged or not (no-op when off)
+      NavcoreNoise::get().g1c_feedback(featid, dof, chi2, nominal_sq);
     if (log == nullptr)
       return;
     NavcoreNoise &nn = NavcoreNoise::get();
