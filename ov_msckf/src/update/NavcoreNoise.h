@@ -40,6 +40,12 @@ public:
 
   /// Pixel variance to use for this feature; nominal_sq unless mode 1 with an oracle connected
   double sigma_sq(size_t featid, double nominal_sq) {
+    if (mode == 6) // baseline: Sage-Husa adaptive noise, one value for every feature
+      return iae_s2 > 0.0 ? iae_s2 : nominal_sq;
+    if (mode == 7) { // baseline: Huber weight per MSCKF feature (set by UpdaterMSCKF), configured noise otherwise
+      auto it = huber_s2.find(featid);
+      return it != huber_s2.end() ? it->second : nominal_sq;
+    }
     if (mode == 3) // T.4d G1: stereo epipolar estimate (estimator document, Sec. 3.2)
       return scale * scale * epi_sigma_sq(featid, nominal_sq);
     if (mode == 5) // T.4d G1c: configured noise as a floor; flagged features add their measured excess
@@ -63,6 +69,34 @@ public:
     return s * s;
   }
 
+  // ---- published baselines (modes 6 and 7) ----
+  bool huber_on() const { return mode == 7; }
+  /// mode 7: weight c/u beyond the threshold, u = sqrt(chi2/dof) at the configured noise; stores and returns the
+  /// feature's variance (configured / weight)
+  double huber_set(size_t featid, double u, double nominal_sq) {
+    const double w = (u > huber_c) ? huber_c / u : 1.0;
+    const double s2 = nominal_sq / w;
+    huber_s2[featid] = s2;
+    return s2;
+  }
+  /// UpdaterMSCKF, once per feature before its noise is chosen: a new update (timestamp) folds the previous one
+  void msckf_feature_begin(double t) {
+    if (t != iae_t) {
+      iae_fold();
+      iae_t = t;
+    }
+  }
+  /// mode 6, after the chi-square test; res and S are whitened by sqrt(nominal / used), S = H P H' + nominal I
+  void iae_feedback(size_t featid, double res_sq, double S_trace, int dof, double nominal_sq) {
+    if (mode != 6 || dof <= 0)
+      return;
+    const double w2 = nominal_sq / sigma_sq(featid, nominal_sq);                   // whitening factor squared
+    const double rr = res_sq / w2, hph = (S_trace - dof * nominal_sq) / w2;         // back to pixel units
+    iae_sum += (rr - hph) / dof; // unbiased one-feature estimate of the pixel-noise variance
+    iae_n++;
+    iae_nominal = nominal_sq;
+  }
+  double iae_s2 = -1.0; ///< mode 6: current shared pixel-noise variance (px^2); -1 until the first update
   int mode = 0;
   double pool_sigma_sq = -1.0; ///< T.4b: mean true sigma^2 over the current frame (mode 2)
   double scale = 1.0;
@@ -242,6 +276,15 @@ private:
     if (mode == 5 && g1c_innov && !g1c_perframe)
       std::fprintf(stderr, "[NavCore] G1c trust: boost scaled by the filter residuals (start %.2f, rate %.2f, pooled 20/20, cap 50)\n",
                    g1c_trust, g1c_trust_rate);
+    if (const char *v = std::getenv("NAVCORE_IAE_B"))
+      iae_b = std::atof(v);
+    if (const char *v = std::getenv("NAVCORE_HUBER_C"))
+      huber_c = std::atof(v);
+    if (mode == 6)
+      std::fprintf(stderr, "[NavCore] IAE: Sage-Husa adaptive noise, one value for all features (b %.3f, clamp %.2f-%.2f px)\n", iae_b,
+                   iae_min, iae_max);
+    if (mode == 7)
+      std::fprintf(stderr, "[NavCore] Huber: per-feature weight from the residual at the configured noise (threshold %.3f)\n", huber_c);
     if (mode == 3 || oracle_logsd > 0.0)
       std::fprintf(stderr, "[NavCore] G1: epi nu0 %.2f, oracle logsd %.3f, noise seed %llu\n", epi_nu0, oracle_logsd, noise_seed);
     if (mode == 5)
@@ -254,6 +297,23 @@ private:
   bool warned = false;
   bool g1c_perframe = false; ///< NAVCORE_G1C_PERFRAME=1: G1c with one value per frame
   bool g1c_innov = false;     ///< NAVCORE_G1C_INNOV=1: improved version (trust factor on the boost)
+  double iae_b = 0.98, iae_min = 0.25, iae_max = 10.0, iae_t = -1.0, iae_sum = 0.0, iae_nominal = 1.0;
+  int iae_n = 0, iae_k = 0;
+  double huber_c = 1.345;
+  std::unordered_map<size_t, double> huber_s2;
+  void iae_fold() {
+    if (iae_n == 0)
+      return;
+    const double v = iae_sum / iae_n;                                         // this update's mean estimate
+    const double d = (1.0 - iae_b) / (1.0 - std::pow(iae_b, iae_k + 1));      // Sage-Husa weight
+    const double prev = iae_s2 > 0.0 ? iae_s2 : iae_nominal;
+    iae_s2 = std::min(iae_max * iae_max, std::max(iae_min * iae_min, (1.0 - d) * prev + d * v));
+    iae_k++;
+    iae_sum = 0.0;
+    iae_n = 0;
+    if (iae_k % 200 == 0)
+      std::fprintf(stderr, "[NavCore] IAE sigma %.3f px after %d updates\n", std::sqrt(iae_s2), iae_k);
+  }
   double g1c_trust_rate = 0.1; ///< fraction of the way the trust factor moves per frame (fixed by design)
   int fb_n = 0;                ///< pooled updates that moved the trust factor
   std::vector<double> fb_flag_e2, fb_flag_boost, fb_rest_e2;

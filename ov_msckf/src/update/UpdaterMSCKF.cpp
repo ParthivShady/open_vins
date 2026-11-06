@@ -280,7 +280,15 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     // NavCore T.4: per-feature noise by whitening after the null-space projection
     // (method doc, Prop. 7). Gate and R_big keep sigma_pix_sq. No-op unless NAVCORE_R_MODE=1.
     {
-      const double navcore_s2 = NavcoreNoise::get().sigma_sq((*it2)->featid, _options.sigma_pix_sq);
+      NavcoreNoise::get().msckf_feature_begin(state->_timestamp); // NavCore baselines: a new update folds the last one
+      double navcore_s2 = NavcoreNoise::get().sigma_sq((*it2)->featid, _options.sigma_pix_sq);
+      if (NavcoreNoise::get().huber_on()) { // NavCore baseline: Huber weight from the residual at the configured noise
+        Eigen::MatrixXd navcore_P0 = StateHelper::get_marginal_covariance(state, Hx_order);
+        Eigen::MatrixXd navcore_S0 = H_x * navcore_P0 * H_x.transpose();
+        navcore_S0.diagonal() += _options.sigma_pix_sq * Eigen::VectorXd::Ones(navcore_S0.rows());
+        const double navcore_u = std::sqrt(res.dot(navcore_S0.llt().solve(res)) / std::max(1, (int)res.rows()));
+        navcore_s2 = NavcoreNoise::get().huber_set((*it2)->featid, navcore_u, _options.sigma_pix_sq);
+      }
       if (navcore_s2 != _options.sigma_pix_sq) {
         const double rho = std::sqrt(_options.sigma_pix_sq / navcore_s2);
         H_x *= rho;
@@ -293,6 +301,7 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     Eigen::MatrixXd S = H_x * P_marg * H_x.transpose();
     S.diagonal() += _options.sigma_pix_sq * Eigen::VectorXd::Ones(S.rows());
     double chi2 = res.dot(S.llt().solve(res));
+    NavcoreNoise::get().iae_feedback((*it2)->featid, res.squaredNorm(), S.trace(), (int)res.rows(), _options.sigma_pix_sq); // NavCore baseline
 
     // Get our threshold (we precompute up to 500 but handle the case that it is more)
     double chi2_check;

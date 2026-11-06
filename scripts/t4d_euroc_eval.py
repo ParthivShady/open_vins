@@ -2,7 +2,7 @@
 """NavCore T.4d real data: trajectory error of OpenVINS runs on EuRoC, and the summary across runs.
 Usage:  t4d_euroc_eval.py run <run_dir> <groundtruth.csv>     one run: writes <run_dir>/ate.txt
         t4d_euroc_eval.py summary [seq ...]                   all runs under results/t4d_euroc (default: every sequence)
-        t4d_euroc_eval.py pick <seq> <fixed|g1c|pfr|gate>               the calibration choice (rule below), printed as a config name
+        t4d_euroc_eval.py pick <seq> <fixed|g1c|pfr|gate|iae|hub>               the calibration choice (rule below), printed as a config name
         t4d_euroc_eval.py selftest
 Run 0 of every configuration is a logged check run and is left out of all statistics (logging can slow real-time runs).
 Calibration rule (fixed 18 Oct before any calibration run): the configuration with the lowest median position error
@@ -118,6 +118,9 @@ def summary(seqs):
         pairs += [(g, b) for g in res if g.startswith('g1c') for b in res if b.startswith('pfr')]
         pairs += [(g, b) for g in res if g.startswith('pfr') for b in fixedlike]
         pairs += [(g, b) for g in res if g.startswith('g1t') for b in fixedlike + [c for c in res if c.startswith('g1c') or c.startswith('pfr')]]
+        baselines = [c for c in res if c.startswith('iae') or c.startswith('hub')]   # published adaptive baselines
+        pairs += [(g, b) for g in res if g.startswith('g1t') or g.startswith('g1c') for b in baselines]
+        pairs += [(g, b) for g in baselines for b in fixedlike]
         for g, b in pairs:
             pg, pb = runs_by(seq, g), runs_by(seq, b)
             common = sorted(set(pg) & set(pb))
@@ -149,6 +152,10 @@ def pick(seq, kind):
     near = [c for c in meds if meds[c] <= 1.02 * meds[best]]
     if kind == 'fixed':
         choice = min(near, key=lambda c: (abs(float(c[5:]) - 1.0), meds[c]))
+    elif kind == 'iae':   # within 2% of the best, the forgetting factor closest to the textbook 0.98
+        choice = min(near, key=lambda c: (abs(float(c[5:].split('_')[0]) - 0.98), meds[c]))
+    elif kind == 'hub':   # within 2% of the best, the threshold closest to the textbook 1.345
+        choice = min(near, key=lambda c: (abs(float(c[5:].split('_')[0]) - 1.345), meds[c]))
     elif kind == 'gate':   # smallest widening of the gate within 2% of the best
         choice = min(near, key=lambda c: (int(c[4:].split('_')[0]), meds[c]))
     else:

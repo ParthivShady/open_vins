@@ -40,7 +40,7 @@ one() {
   if [ "${REALTIME:-0}" = 1 ] && pgrep -f "run_subscribe_msckf|run_simulation|run_t4d_g1|run_t4e" > /dev/null; then
     echo "ERROR: another OpenVINS process or batch is running; real-time runs need the machine to themselves"; return 1
   fi
-  local sig beta="" pf=0 tr=0 gm="" xp=() envv=(env -u NAVCORE_R_MODE -u NAVCORE_FILTER_SIGMA -u NAVCORE_ORACLE_SCALE -u NAVCORE_EPI_NU0 -u NAVCORE_ORACLE_LOGSD -u NAVCORE_GATE_LOG -u NAVCORE_G1C_PERFRAME -u NAVCORE_G1C_INNOV)
+  local sig beta="" pf=0 tr=0 gm="" bl="" ib hc xp=() envv=(env -u NAVCORE_R_MODE -u NAVCORE_FILTER_SIGMA -u NAVCORE_ORACLE_SCALE -u NAVCORE_EPI_NU0 -u NAVCORE_ORACLE_LOGSD -u NAVCORE_GATE_LOG -u NAVCORE_G1C_PERFRAME -u NAVCORE_G1C_INNOV -u NAVCORE_IAE_B -u NAVCORE_HUBER_C)
   case $cfg in
     fixed*) sig=${cfg#fixed} ;;
     g1c_b*_f*) beta=${cfg#g1c_b}; beta=${beta%%_f*}; sig=${cfg##*_f}
@@ -49,6 +49,10 @@ one() {
                envv+=(NAVCORE_R_MODE=5 NAVCORE_ORACLE_SCALE=$beta NAVCORE_NOISE_SEED=$rep NAVCORE_G1C_PERFRAME=1) ;;
     g1t_b*_f*) beta=${cfg#g1t_b}; beta=${beta%%_f*}; sig=${cfg##*_f}; tr=1   # improved version: trust factor on the boost
                envv+=(NAVCORE_R_MODE=5 NAVCORE_ORACLE_SCALE=$beta NAVCORE_NOISE_SEED=$rep NAVCORE_G1C_INNOV=1) ;;
+    iae_b*_f*) bl=iae; ib=${cfg#iae_b}; ib=${ib%%_f*}; sig=${cfg##*_f}   # baseline: Sage-Husa adaptive noise, one value
+               envv+=(NAVCORE_R_MODE=6 NAVCORE_IAE_B=$ib) ;;
+    hub_c*_f*) bl=hub; hc=${cfg#hub_c}; hc=${hc%%_f*}; sig=${cfg##*_f}   # baseline: Huber weight per feature
+               envv+=(NAVCORE_R_MODE=7 NAVCORE_HUBER_C=$hc) ;;
     gate*_f*) gm=${cfg#gate}; gm=${gm%%_f*}; sig=${cfg##*_f}   # fixed noise with the chi-square gate widened gm times
                case $gm in ''|*[!0-9]*) echo "gate multiplier must be a whole number: $cfg"; return 1 ;; esac
                xp=(-p up_msckf_chi2_multipler:=$gm.0 -p up_slam_chi2_multipler:=$gm.0) ;;   # as decimals: OpenVINS reads a double
@@ -96,10 +100,17 @@ one() {
   if [ "$pf" = 0 ] && grep -q "\[NavCore\] G1c per-frame" "$out/run.log"; then echo "FAIL $seq $cfg run$rep: per-frame switch on unexpectedly"; return 1; fi
   if [ "$tr" = 1 ] && ! grep -q "\[NavCore\] G1c trust:" "$out/run.log"; then echo "FAIL $seq $cfg run$rep: improved-version switch not on"; return 1; fi
   if [ "$tr" = 0 ] && grep -q "\[NavCore\] G1c trust:" "$out/run.log"; then echo "FAIL $seq $cfg run$rep: improved-version switch on unexpectedly"; return 1; fi
+  if [ "$bl" = iae ] && ! grep -q "\[NavCore\] IAE:" "$out/run.log"; then echo "FAIL $seq $cfg run$rep: Sage-Husa baseline not on"; return 1; fi
+  if [ "$bl" = hub ] && ! grep -q "\[NavCore\] Huber:" "$out/run.log"; then echo "FAIL $seq $cfg run$rep: Huber baseline not on"; return 1; fi
+  if [ -z "$bl" ] && grep -q "\[NavCore\] \(IAE\|Huber\):" "$out/run.log"; then echo "FAIL $seq $cfg run$rep: a baseline switch is on unexpectedly"; return 1; fi
   if [ "$rep" = 0 ]; then   # the check run: every row must sit at the configured noise (fixed) or at/above it (G1c)
     [ -s "$out/gate_feat.csv" ] || { echo "FAIL $seq $cfg run0: no gate log, so the filter never made an update (start-up failed?)"; return 1; }
     local ok
-    if [ -n "$beta" ]; then ok=$(awk -F, -v s="$sig" 'NR > 1 && $5 < s * 0.999999 {b = 1} END {print b ? 0 : 1}' "$out/gate_feat.csv")
+    if [ "$bl" = iae ]; then   # one adaptive value: it must have moved off the configured start value
+      ok=$(awk -F, -v s="$sig" 'NR > 1 && ($5 < s * 0.999999 || $5 > s * 1.000001) {b = 1} END {print b ? 1 : 0}' "$out/gate_feat.csv")
+    elif [ "$bl" = hub ]; then   # Huber only inflates, and some feature must have been inflated
+      ok=$(awk -F, -v s="$sig" 'NR > 1 && $5 < s * 0.999999 {b = 1} NR > 1 && $5 > s * 1.000001 {u = 1} END {print (b || !u) ? 0 : 1}' "$out/gate_feat.csv")
+    elif [ -n "$beta" ]; then ok=$(awk -F, -v s="$sig" 'NR > 1 && $5 < s * 0.999999 {b = 1} END {print b ? 0 : 1}' "$out/gate_feat.csv")
     else ok=$(awk -F, -v s="$sig" 'NR > 1 && ($5 < s * 0.999999 || $5 > s * 1.000001) {b = 1} END {print b ? 0 : 1}' "$out/gate_feat.csv"); fi
     [ "$ok" = 1 ] || { echo "FAIL $seq $cfg run0: sigma_used does not match the configuration ($sig px)"; return 1; }
     [ "$(wc -l < "$out/gate_feat.csv")" -gt 100 ] || { echo "FAIL $seq $cfg run0: gate log nearly empty"; return 1; }
